@@ -1,6 +1,6 @@
 {
   "name": "claude-in-android",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MCP server for Android device automation via ADB",
   "type": "module",
   "main": "dist/index.js",
