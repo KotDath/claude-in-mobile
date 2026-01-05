@@ -28,7 +28,11 @@ export declare class AdbClient {
      */
     setDevice(deviceId: string): void;
     /**
-     * Take screenshot and return as base64
+     * Take screenshot and return raw PNG buffer
+     */
+    screenshotRaw(): Buffer;
+    /**
+     * Take screenshot and return as base64 PNG (legacy)
      */
     screenshot(): string;
     /**
@@ -98,5 +102,36 @@ export declare class AdbClient {
      * Execute shell command
      */
     shell(command: string): string;
+    /**
+     * Get device logs (logcat)
+     * @param options - filter options
+     */
+    getLogs(options?: {
+        tag?: string;
+        level?: "V" | "D" | "I" | "W" | "E" | "F";
+        lines?: number;
+        since?: string;
+        package?: string;
+    }): string;
+    /**
+     * Clear logcat buffer
+     */
+    clearLogs(): void;
+    /**
+     * Get network stats
+     */
+    getNetworkStats(): string;
+    /**
+     * Get battery info
+     */
+    getBatteryInfo(): string;
+    /**
+     * Get memory info
+     */
+    getMemoryInfo(packageName?: string): string;
+    /**
+     * Get CPU info
+     */
+    getCpuInfo(): string;
 }
 //# sourceMappingURL=client.d.ts.map

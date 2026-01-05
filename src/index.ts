@@ -61,11 +61,31 @@ const tools: Tool[] = [
   },
   {
     name: "screenshot",
-    description: "Take a screenshot of the device screen. Returns base64 encoded PNG image.",
+    description: "Take a screenshot of the device screen. Images are automatically compressed for optimal LLM processing.",
     inputSchema: {
       type: "object",
       properties: {
         platform: platformParam,
+        compress: {
+          type: "boolean",
+          description: "Compress image (default: true). Set false for original quality.",
+          default: true,
+        },
+        maxWidth: {
+          type: "number",
+          description: "Max width in pixels (default: 1080)",
+          default: 1080,
+        },
+        maxHeight: {
+          type: "number",
+          description: "Max height in pixels (default: 1920)",
+          default: 1920,
+        },
+        quality: {
+          type: "number",
+          description: "JPEG quality 1-100 (default: 80)",
+          default: 80,
+        },
       },
     },
   },
@@ -319,7 +339,7 @@ const tools: Tool[] = [
   },
   {
     name: "open_url",
-    description: "Open URL in device browser (iOS simulator only)",
+    description: "Open URL in device browser",
     inputSchema: {
       type: "object",
       properties: {
@@ -330,6 +350,53 @@ const tools: Tool[] = [
         platform: platformParam,
       },
       required: ["url"],
+    },
+  },
+  {
+    name: "get_logs",
+    description: "Get device logs (logcat for Android, system log for iOS). Useful for debugging app issues, crashes, and errors.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: platformParam,
+        level: {
+          type: "string",
+          description: "Log level filter. Android: V/D/I/W/E/F (Verbose/Debug/Info/Warning/Error/Fatal). iOS: debug/info/default/error/fault",
+        },
+        tag: {
+          type: "string",
+          description: "Filter by tag (Android only)",
+        },
+        lines: {
+          type: "number",
+          description: "Number of lines to return (default: 100)",
+          default: 100,
+        },
+        package: {
+          type: "string",
+          description: "Filter by package/bundle ID",
+        },
+      },
+    },
+  },
+  {
+    name: "clear_logs",
+    description: "Clear device log buffer (Android only)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: platformParam,
+      },
+    },
+  },
+  {
+    name: "get_system_info",
+    description: "Get device system info: battery level, memory usage (Android only)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: platformParam,
+      },
     },
   },
 ];
@@ -383,11 +450,17 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "screenshot": {
-      const base64 = deviceManager.screenshot(platform);
+      const compress = args.compress !== false;
+      const options = {
+        maxWidth: args.maxWidth as number | undefined,
+        maxHeight: args.maxHeight as number | undefined,
+        quality: args.quality as number | undefined,
+      };
+      const result = await deviceManager.screenshot(platform, compress, options);
       return {
         image: {
-          data: base64,
-          mimeType: "image/png",
+          data: result.data,
+          mimeType: result.mimeType,
         },
       };
     }
@@ -588,6 +661,27 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       return { text: `Opened URL: ${args.url}` };
     }
 
+    case "get_logs": {
+      const logs = deviceManager.getLogs({
+        platform,
+        level: args.level as string | undefined,
+        tag: args.tag as string | undefined,
+        lines: (args.lines as number) ?? 100,
+        package: args.package as string | undefined,
+      });
+      return { text: logs || "(no logs)" };
+    }
+
+    case "clear_logs": {
+      const result = deviceManager.clearLogs(platform);
+      return { text: result };
+    }
+
+    case "get_system_info": {
+      const info = deviceManager.getSystemInfo(platform);
+      return { text: info };
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -597,7 +691,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "2.0.0",
+    version: "2.1.0",
   },
   {
     capabilities: {

@@ -1,5 +1,6 @@
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
+import { compressScreenshot } from "./utils/image.js";
 export class DeviceManager {
     androidClient;
     iosClient;
@@ -111,9 +112,29 @@ export class DeviceManager {
     }
     // ============ Unified Commands ============
     /**
-     * Take screenshot
+     * Take screenshot with optional compression
      */
-    screenshot(platform) {
+    async screenshot(platform, compress = true, options) {
+        const client = this.getClient(platform);
+        if (client instanceof AdbClient) {
+            const buffer = client.screenshotRaw();
+            if (compress) {
+                return compressScreenshot(buffer, options);
+            }
+            return { data: buffer.toString("base64"), mimeType: "image/png" };
+        }
+        else {
+            const buffer = client.screenshotRaw();
+            if (compress) {
+                return compressScreenshot(buffer, options);
+            }
+            return { data: buffer.toString("base64"), mimeType: "image/png" };
+        }
+    }
+    /**
+     * Take screenshot without compression (legacy)
+     */
+    screenshotRaw(platform) {
         const client = this.getClient(platform);
         return client.screenshot();
     }
@@ -216,6 +237,54 @@ export class DeviceManager {
      */
     getIosClient() {
         return this.iosClient;
+    }
+    /**
+     * Get device logs
+     */
+    getLogs(options = {}) {
+        const client = this.getClient(options.platform);
+        if (client instanceof AdbClient) {
+            return client.getLogs({
+                level: options.level,
+                tag: options.tag,
+                lines: options.lines,
+                package: options.package,
+            });
+        }
+        else {
+            return client.getLogs({
+                level: options.level,
+                lines: options.lines,
+                predicate: options.package ? `subsystem == "${options.package}"` : undefined,
+            });
+        }
+    }
+    /**
+     * Clear logs
+     */
+    clearLogs(platform) {
+        const client = this.getClient(platform);
+        if (client instanceof AdbClient) {
+            client.clearLogs();
+            return "Logcat buffer cleared";
+        }
+        else {
+            return client.clearLogs();
+        }
+    }
+    /**
+     * Get system info (battery, memory, etc.)
+     */
+    getSystemInfo(platform) {
+        const client = this.getClient(platform);
+        if (client instanceof AdbClient) {
+            const battery = client.getBatteryInfo();
+            const memory = client.getMemoryInfo();
+            return `=== Battery ===\n${battery}\n\n=== Memory ===\n${memory}`;
+        }
+        else {
+            return "System info is only available for Android devices.";
+        }
     }
 }
 //# sourceMappingURL=device-manager.js.map

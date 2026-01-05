@@ -91,11 +91,17 @@ export class AdbClient {
   }
 
   /**
-   * Take screenshot and return as base64
+   * Take screenshot and return raw PNG buffer
+   */
+  screenshotRaw(): Buffer {
+    return this.execRaw("exec-out screencap -p");
+  }
+
+  /**
+   * Take screenshot and return as base64 PNG (legacy)
    */
   screenshot(): string {
-    const buffer = this.execRaw("exec-out screencap -p");
-    return buffer.toString("base64");
+    return this.screenshotRaw().toString("base64");
   }
 
   /**
@@ -292,5 +298,91 @@ export class AdbClient {
    */
   shell(command: string): string {
     return this.exec(`shell ${command}`);
+  }
+
+  /**
+   * Get device logs (logcat)
+   * @param options - filter options
+   */
+  getLogs(options: {
+    tag?: string;
+    level?: "V" | "D" | "I" | "W" | "E" | "F";
+    lines?: number;
+    since?: string;
+    package?: string;
+  } = {}): string {
+    let cmd = "logcat -d";
+
+    // Filter by log level
+    if (options.level) {
+      cmd += ` *:${options.level}`;
+    }
+
+    // Filter by tag
+    if (options.tag) {
+      cmd += ` -s ${options.tag}`;
+    }
+
+    // Limit number of lines
+    if (options.lines) {
+      cmd += ` -t ${options.lines}`;
+    }
+
+    // Filter by time (e.g., "01-01 00:00:00.000")
+    if (options.since) {
+      cmd += ` -t "${options.since}"`;
+    }
+
+    const output = this.exec(`shell ${cmd}`);
+
+    // Filter by package if specified
+    if (options.package) {
+      const lines = output.split("\n");
+      const filtered = lines.filter(line =>
+        line.includes(options.package!) ||
+        line.match(/^\d+-\d+\s+\d+:\d+/) // Keep timestamp lines
+      );
+      return filtered.join("\n");
+    }
+
+    return output;
+  }
+
+  /**
+   * Clear logcat buffer
+   */
+  clearLogs(): void {
+    this.exec("logcat -c");
+  }
+
+  /**
+   * Get network stats
+   */
+  getNetworkStats(): string {
+    return this.exec("shell dumpsys netstats | head -100");
+  }
+
+  /**
+   * Get battery info
+   */
+  getBatteryInfo(): string {
+    return this.exec("shell dumpsys battery");
+  }
+
+  /**
+   * Get memory info
+   */
+  getMemoryInfo(packageName?: string): string {
+    if (packageName) {
+      return this.exec(`shell dumpsys meminfo ${packageName}`);
+    }
+    return this.exec("shell cat /proc/meminfo | head -20");
+  }
+
+  /**
+   * Get CPU info
+   */
+  getCpuInfo(): string {
+    return this.exec("shell top -n 1 | head -20");
   }
 }

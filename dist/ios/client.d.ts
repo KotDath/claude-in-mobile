@@ -37,7 +37,11 @@ export declare class IosClient {
      */
     shutdown(deviceId?: string): void;
     /**
-     * Take screenshot and return as base64
+     * Take screenshot and return raw PNG buffer
+     */
+    screenshotRaw(): Buffer;
+    /**
+     * Take screenshot and return as base64 (legacy)
      */
     screenshot(): string;
     /**
@@ -101,5 +105,21 @@ export declare class IosClient {
      * Execute arbitrary simctl command
      */
     shell(command: string): string;
+    /**
+     * Get device logs
+     */
+    getLogs(options?: {
+        predicate?: string;
+        lines?: number;
+        level?: "debug" | "info" | "default" | "error" | "fault";
+    }): string;
+    /**
+     * Get app-specific logs
+     */
+    getAppLogs(bundleId: string, lines?: number): string;
+    /**
+     * Clear logs (not fully supported on iOS, but we can note the timestamp)
+     */
+    clearLogs(): string;
 }
 //# sourceMappingURL=client.d.ts.map

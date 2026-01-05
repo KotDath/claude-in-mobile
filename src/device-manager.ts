@@ -1,5 +1,6 @@
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
+import { compressScreenshot, type CompressOptions } from "./utils/image.js";
 
 export type Platform = "android" | "ios";
 
@@ -138,9 +139,34 @@ export class DeviceManager {
   // ============ Unified Commands ============
 
   /**
-   * Take screenshot
+   * Take screenshot with optional compression
    */
-  screenshot(platform?: Platform): string {
+  async screenshot(
+    platform?: Platform,
+    compress: boolean = true,
+    options?: CompressOptions
+  ): Promise<{ data: string; mimeType: string }> {
+    const client = this.getClient(platform);
+
+    if (client instanceof AdbClient) {
+      const buffer = client.screenshotRaw();
+      if (compress) {
+        return compressScreenshot(buffer, options);
+      }
+      return { data: buffer.toString("base64"), mimeType: "image/png" };
+    } else {
+      const buffer = client.screenshotRaw();
+      if (compress) {
+        return compressScreenshot(buffer, options);
+      }
+      return { data: buffer.toString("base64"), mimeType: "image/png" };
+    }
+  }
+
+  /**
+   * Take screenshot without compression (legacy)
+   */
+  screenshotRaw(platform?: Platform): string {
     const client = this.getClient(platform);
     return client.screenshot();
   }
@@ -254,5 +280,62 @@ export class DeviceManager {
    */
   getIosClient(): IosClient {
     return this.iosClient;
+  }
+
+  /**
+   * Get device logs
+   */
+  getLogs(options: {
+    platform?: Platform;
+    level?: string;
+    tag?: string;
+    lines?: number;
+    package?: string;
+  } = {}): string {
+    const client = this.getClient(options.platform);
+
+    if (client instanceof AdbClient) {
+      return client.getLogs({
+        level: options.level as "V" | "D" | "I" | "W" | "E" | "F" | undefined,
+        tag: options.tag,
+        lines: options.lines,
+        package: options.package,
+      });
+    } else {
+      return client.getLogs({
+        level: options.level as "debug" | "info" | "default" | "error" | "fault" | undefined,
+        lines: options.lines,
+        predicate: options.package ? `subsystem == "${options.package}"` : undefined,
+      });
+    }
+  }
+
+  /**
+   * Clear logs
+   */
+  clearLogs(platform?: Platform): string {
+    const client = this.getClient(platform);
+
+    if (client instanceof AdbClient) {
+      client.clearLogs();
+      return "Logcat buffer cleared";
+    } else {
+      return client.clearLogs();
+    }
+  }
+
+  /**
+   * Get system info (battery, memory, etc.)
+   */
+  getSystemInfo(platform?: Platform): string {
+    const client = this.getClient(platform);
+
+    if (client instanceof AdbClient) {
+      const battery = client.getBatteryInfo();
+      const memory = client.getMemoryInfo();
+      return `=== Battery ===\n${battery}\n\n=== Memory ===\n${memory}`;
+    } else {
+      return "System info is only available for Android devices.";
+    }
   }
 }

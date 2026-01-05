@@ -100,17 +100,23 @@ export class IosClient {
   }
 
   /**
-   * Take screenshot and return as base64
+   * Take screenshot and return raw PNG buffer
    */
-  screenshot(): string {
+  screenshotRaw(): Buffer {
     const tmpFile = join(tmpdir(), `ios-screenshot-${Date.now()}.png`);
     try {
       this.exec(`io ${this.targetDevice} screenshot "${tmpFile}"`);
-      const buffer = readFileSync(tmpFile);
-      return buffer.toString("base64");
+      return readFileSync(tmpFile);
     } finally {
       try { unlinkSync(tmpFile); } catch {}
     }
+  }
+
+  /**
+   * Take screenshot and return as base64 (legacy)
+   */
+  screenshot(): string {
+    return this.screenshotRaw().toString("base64");
   }
 
   /**
@@ -313,5 +319,70 @@ Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
    */
   shell(command: string): string {
     return this.exec(command);
+  }
+
+  /**
+   * Get device logs
+   */
+  getLogs(options: {
+    predicate?: string;
+    lines?: number;
+    level?: "debug" | "info" | "default" | "error" | "fault";
+  } = {}): string {
+    try {
+      let cmd = `spawn ${this.targetDevice} log show --style compact`;
+
+      // Add time limit (last 5 minutes by default)
+      cmd += " --last 5m";
+
+      // Filter by level
+      if (options.level) {
+        cmd += ` --predicate 'messageType == ${options.level}'`;
+      }
+
+      // Custom predicate
+      if (options.predicate) {
+        cmd += ` --predicate '${options.predicate}'`;
+      }
+
+      const output = this.exec(cmd);
+
+      // Limit lines if specified
+      if (options.lines) {
+        const lines = output.split("\n");
+        return lines.slice(-options.lines).join("\n");
+      }
+
+      return output;
+    } catch (error: any) {
+      // Fallback: try system log
+      try {
+        return execSync(
+          `xcrun simctl spawn ${this.targetDevice} log show --style compact --last 1m 2>/dev/null | tail -100`,
+          { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 }
+        );
+      } catch {
+        return "Unable to retrieve logs. Make sure the simulator is running.";
+      }
+    }
+  }
+
+  /**
+   * Get app-specific logs
+   */
+  getAppLogs(bundleId: string, lines: number = 100): string {
+    try {
+      const cmd = `spawn ${this.targetDevice} log show --style compact --last 5m --predicate 'subsystem == "${bundleId}"' | tail -${lines}`;
+      return this.exec(cmd);
+    } catch {
+      return `Unable to retrieve logs for ${bundleId}`;
+    }
+  }
+
+  /**
+   * Clear logs (not fully supported on iOS, but we can note the timestamp)
+   */
+  clearLogs(): string {
+    return "iOS simulator logs cannot be cleared. Use --last parameter to filter recent logs.";
   }
 }

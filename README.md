@@ -7,7 +7,8 @@ Control your Android phone, emulator, or iOS Simulator with natural language thr
 ## Features
 
 - **Unified API** — Same commands work for both Android and iOS
-- **Screenshot capture** — See what's on the device screen
+- **Smart screenshots** — Auto-compressed for optimal LLM processing (no more oversized images!)
+- **Device logs** — Read logcat/system logs with filters for debugging
 - **UI interactions** — Tap, long press, swipe by coordinates or element text
 - **Text input** — Type into focused fields
 - **App control** — Launch, stop, and install apps
@@ -94,6 +95,9 @@ claude mcp add --transport stdio mobile -- cmd /c npx -y claude-in-android
 | `open_url` | ✅ | ✅ | Open URL in browser |
 | `shell` | ✅ | ✅ | Run shell command |
 | `wait` | ✅ | ✅ | Wait for duration |
+| `get_logs` | ✅ | ✅ | Get device logs (logcat/system log) |
+| `clear_logs` | ✅ | ⚠️ | Clear log buffer |
+| `get_system_info` | ✅ | ❌ | Battery, memory info |
 
 ## Usage Examples
 

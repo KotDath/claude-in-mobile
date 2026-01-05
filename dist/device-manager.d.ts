@@ -1,5 +1,6 @@
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
+import { type CompressOptions } from "./utils/image.js";
 export type Platform = "android" | "ios";
 export interface Device {
     id: string;
@@ -38,9 +39,16 @@ export declare class DeviceManager {
      */
     getCurrentPlatform(): Platform | undefined;
     /**
-     * Take screenshot
+     * Take screenshot with optional compression
      */
-    screenshot(platform?: Platform): string;
+    screenshot(platform?: Platform, compress?: boolean, options?: CompressOptions): Promise<{
+        data: string;
+        mimeType: string;
+    }>;
+    /**
+     * Take screenshot without compression (legacy)
+     */
+    screenshotRaw(platform?: Platform): string;
     /**
      * Tap at coordinates
      */
@@ -93,5 +101,23 @@ export declare class DeviceManager {
      * Get iOS client directly
      */
     getIosClient(): IosClient;
+    /**
+     * Get device logs
+     */
+    getLogs(options?: {
+        platform?: Platform;
+        level?: string;
+        tag?: string;
+        lines?: number;
+        package?: string;
+    }): string;
+    /**
+     * Clear logs
+     */
+    clearLogs(platform?: Platform): string;
+    /**
+     * Get system info (battery, memory, etc.)
+     */
+    getSystemInfo(platform?: Platform): string;
 }
 //# sourceMappingURL=device-manager.d.ts.map
