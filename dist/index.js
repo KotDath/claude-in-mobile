@@ -9,8 +9,8 @@ const deviceManager = new DeviceManager();
 // Platform parameter schema (reused across tools)
 const platformParam = {
     type: "string",
-    enum: ["android", "ios"],
-    description: "Target platform. If not specified, uses the active device.",
+    enum: ["android", "ios", "desktop"],
+    description: "Target platform. If not specified, uses the active target.",
 };
 // Define tools
 const tools = [
@@ -382,6 +382,134 @@ const tools = [
             },
         },
     },
+    // ============ Desktop Tools ============
+    {
+        name: "set_target",
+        description: "Switch the active target between Android, iOS, and Desktop platforms",
+        inputSchema: {
+            type: "object",
+            properties: {
+                target: {
+                    type: "string",
+                    enum: ["android", "ios", "desktop"],
+                    description: "Target platform to switch to",
+                },
+            },
+            required: ["target"],
+        },
+    },
+    {
+        name: "get_target",
+        description: "Get the current active target and its status",
+        inputSchema: {
+            type: "object",
+            properties: {},
+        },
+    },
+    {
+        name: "launch_desktop_app",
+        description: "Start desktop automation. Optionally also launches a Compose Desktop application via Gradle.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                projectPath: {
+                    type: "string",
+                    description: "Path to the Gradle project directory. If provided, also launches the user's app.",
+                },
+                task: {
+                    type: "string",
+                    description: "Gradle task to run (e.g., ':desktopApp:run'). Auto-detected if not specified.",
+                },
+                jvmArgs: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "JVM arguments to pass to the app",
+                },
+            },
+        },
+    },
+    {
+        name: "stop_desktop_app",
+        description: "Stop the running desktop application",
+        inputSchema: {
+            type: "object",
+            properties: {},
+        },
+    },
+    {
+        name: "get_window_info",
+        description: "Get information about desktop windows (Desktop only)",
+        inputSchema: {
+            type: "object",
+            properties: {},
+        },
+    },
+    {
+        name: "focus_window",
+        description: "Focus a specific desktop window (Desktop only)",
+        inputSchema: {
+            type: "object",
+            properties: {
+                windowId: {
+                    type: "string",
+                    description: "Window ID from get_window_info",
+                },
+            },
+            required: ["windowId"],
+        },
+    },
+    {
+        name: "resize_window",
+        description: "Resize a desktop window (Desktop only)",
+        inputSchema: {
+            type: "object",
+            properties: {
+                windowId: {
+                    type: "string",
+                    description: "Window ID (optional, uses focused window if not specified)",
+                },
+                width: {
+                    type: "number",
+                    description: "New window width in pixels",
+                },
+                height: {
+                    type: "number",
+                    description: "New window height in pixels",
+                },
+            },
+            required: ["width", "height"],
+        },
+    },
+    {
+        name: "get_clipboard",
+        description: "Get clipboard text content (Desktop only)",
+        inputSchema: {
+            type: "object",
+            properties: {},
+        },
+    },
+    {
+        name: "set_clipboard",
+        description: "Set clipboard text content (Desktop only)",
+        inputSchema: {
+            type: "object",
+            properties: {
+                text: {
+                    type: "string",
+                    description: "Text to set in clipboard",
+                },
+            },
+            required: ["text"],
+        },
+    },
+    {
+        name: "get_performance_metrics",
+        description: "Get memory and CPU usage metrics (Desktop only)",
+        inputSchema: {
+            type: "object",
+            properties: {},
+        },
+    },
 ];
 // Cache for UI elements (to support tap by index)
 let cachedElements = [];
@@ -395,14 +523,16 @@ async function handleTool(name, args) {
                 return { text: "No devices connected. Make sure ADB/Xcode is running and a device/emulator/simulator is connected." };
             }
             const activeDevice = deviceManager.getActiveDevice();
+            const { target: activeTarget } = deviceManager.getTarget();
             // Group by platform
             const android = devices.filter(d => d.platform === "android");
             const ios = devices.filter(d => d.platform === "ios");
+            const desktop = devices.filter(d => d.platform === "desktop");
             let result = "Connected devices:\n";
             if (android.length > 0) {
                 result += "\nAndroid:\n";
                 for (const d of android) {
-                    const active = activeDevice?.id === d.id ? " [ACTIVE]" : "";
+                    const active = activeDevice?.id === d.id && activeTarget === "android" ? " [ACTIVE]" : "";
                     const type = d.isSimulator ? "emulator" : "physical";
                     result += `  • ${d.id} - ${d.name} (${type}, ${d.state})${active}\n`;
                 }
@@ -410,9 +540,16 @@ async function handleTool(name, args) {
             if (ios.length > 0) {
                 result += "\niOS:\n";
                 for (const d of ios) {
-                    const active = activeDevice?.id === d.id ? " [ACTIVE]" : "";
+                    const active = activeDevice?.id === d.id && activeTarget === "ios" ? " [ACTIVE]" : "";
                     const type = d.isSimulator ? "simulator" : "physical";
                     result += `  • ${d.id} - ${d.name} (${type}, ${d.state})${active}\n`;
+                }
+            }
+            if (desktop.length > 0) {
+                result += "\nDesktop:\n";
+                for (const d of desktop) {
+                    const active = activeTarget === "desktop" ? " [ACTIVE]" : "";
+                    result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
                 }
             }
             return { text: result.trim() };
@@ -441,7 +578,12 @@ async function handleTool(name, args) {
             if (currentPlatform === "ios") {
                 return { text: "iOS UI hierarchy is limited. Use screenshot + tap by coordinates, or integrate WebDriverAgent for full UI inspection." };
             }
-            const xml = deviceManager.getUiHierarchy(platform);
+            // Desktop returns pre-formatted text from DeviceManager
+            const xml = await deviceManager.getUiHierarchy(platform);
+            if (currentPlatform === "desktop") {
+                return { text: xml };
+            }
+            // Android: parse XML and format
             cachedElements = parseUiHierarchy(xml);
             const tree = formatUiTree(cachedElements, {
                 showAll: args.showAll,
@@ -456,7 +598,7 @@ async function handleTool(name, args) {
             if (args.index !== undefined && currentPlatform === "android") {
                 const idx = args.index;
                 if (cachedElements.length === 0) {
-                    const xml = deviceManager.getUiHierarchy("android");
+                    const xml = await deviceManager.getUiHierarchy("android");
                     cachedElements = parseUiHierarchy(xml);
                 }
                 const el = cachedElements.find(e => e.index === idx);
@@ -468,7 +610,7 @@ async function handleTool(name, args) {
             }
             // Find by text or resourceId (Android only)
             if ((args.text || args.resourceId) && currentPlatform === "android") {
-                const xml = deviceManager.getUiHierarchy("android");
+                const xml = await deviceManager.getUiHierarchy("android");
                 cachedElements = parseUiHierarchy(xml);
                 let found = [];
                 if (args.text) {
@@ -488,7 +630,7 @@ async function handleTool(name, args) {
             if (x === undefined || y === undefined) {
                 return { text: "Please provide x,y coordinates, text, resourceId, or index" };
             }
-            deviceManager.tap(x, y, platform);
+            await deviceManager.tap(x, y, platform);
             return { text: `Tapped at (${x}, ${y})` };
         }
         case "long_press": {
@@ -497,7 +639,7 @@ async function handleTool(name, args) {
             const duration = args.duration ?? 1000;
             const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
             if (args.text && currentPlatform === "android") {
-                const xml = deviceManager.getUiHierarchy("android");
+                const xml = await deviceManager.getUiHierarchy("android");
                 cachedElements = parseUiHierarchy(xml);
                 const found = findByText(cachedElements, args.text);
                 if (found.length === 0) {
@@ -509,28 +651,28 @@ async function handleTool(name, args) {
             if (x === undefined || y === undefined) {
                 return { text: "Please provide x,y coordinates or text" };
             }
-            deviceManager.longPress(x, y, duration, platform);
+            await deviceManager.longPress(x, y, duration, platform);
             return { text: `Long pressed at (${x}, ${y}) for ${duration}ms` };
         }
         case "swipe": {
             if (args.direction) {
-                deviceManager.swipeDirection(args.direction, platform);
+                await deviceManager.swipeDirection(args.direction, platform);
                 return { text: `Swiped ${args.direction}` };
             }
             if (args.x1 !== undefined && args.y1 !== undefined &&
                 args.x2 !== undefined && args.y2 !== undefined) {
                 const duration = args.duration ?? 300;
-                deviceManager.swipe(args.x1, args.y1, args.x2, args.y2, duration, platform);
+                await deviceManager.swipe(args.x1, args.y1, args.x2, args.y2, duration, platform);
                 return { text: `Swiped from (${args.x1}, ${args.y1}) to (${args.x2}, ${args.y2})` };
             }
             return { text: "Please provide direction or x1,y1,x2,y2 coordinates" };
         }
         case "input_text": {
-            deviceManager.inputText(args.text, platform);
+            await deviceManager.inputText(args.text, platform);
             return { text: `Entered text: "${args.text}"` };
         }
         case "press_key": {
-            deviceManager.pressKey(args.key, platform);
+            await deviceManager.pressKey(args.key, platform);
             return { text: `Pressed key: ${args.key}` };
         }
         case "find_element": {
@@ -538,7 +680,7 @@ async function handleTool(name, args) {
             if (currentPlatform === "ios") {
                 return { text: "find_element is only available for Android. Use screenshot + tap by coordinates for iOS." };
             }
-            const xml = deviceManager.getUiHierarchy("android");
+            const xml = await deviceManager.getUiHierarchy("android");
             cachedElements = parseUiHierarchy(xml);
             const found = findElements(cachedElements, {
                 text: args.text,
@@ -606,8 +748,85 @@ async function handleTool(name, args) {
             return { text: result };
         }
         case "get_system_info": {
-            const info = deviceManager.getSystemInfo(platform);
+            const info = await deviceManager.getSystemInfo(platform);
             return { text: info };
+        }
+        // ============ Desktop Tools ============
+        case "set_target": {
+            const target = args.target;
+            deviceManager.setTarget(target);
+            return { text: `Target set to: ${target}` };
+        }
+        case "get_target": {
+            const { target, status } = deviceManager.getTarget();
+            return { text: `Current target: ${target} (${status})` };
+        }
+        case "launch_desktop_app": {
+            const result = await deviceManager.launchDesktopApp({
+                projectPath: args.projectPath,
+                task: args.task,
+                jvmArgs: args.jvmArgs,
+            });
+            return { text: result };
+        }
+        case "stop_desktop_app": {
+            await deviceManager.stopDesktopApp();
+            return { text: "Desktop app stopped" };
+        }
+        case "get_window_info": {
+            if (!deviceManager.isDesktopRunning()) {
+                return { text: "Desktop app is not running. Use launch_desktop_app first." };
+            }
+            const windowInfo = await deviceManager.getDesktopClient().getWindowInfo();
+            if (windowInfo.windows.length === 0) {
+                return { text: "No windows found" };
+            }
+            let result = "Desktop windows:\n";
+            for (const w of windowInfo.windows) {
+                const focused = w.focused ? " [FOCUSED]" : "";
+                result += `  • ${w.id} - ${w.title}${focused} (${w.bounds.width}x${w.bounds.height})\n`;
+            }
+            return { text: result.trim() };
+        }
+        case "focus_window": {
+            if (!deviceManager.isDesktopRunning()) {
+                return { text: "Desktop app is not running. Use launch_desktop_app first." };
+            }
+            await deviceManager.getDesktopClient().focusWindow(args.windowId);
+            return { text: `Focused window: ${args.windowId}` };
+        }
+        case "resize_window": {
+            if (!deviceManager.isDesktopRunning()) {
+                return { text: "Desktop app is not running. Use launch_desktop_app first." };
+            }
+            await deviceManager.getDesktopClient().resizeWindow(args.width, args.height, args.windowId);
+            return { text: `Resized window to ${args.width}x${args.height}` };
+        }
+        case "get_clipboard": {
+            if (!deviceManager.isDesktopRunning()) {
+                return { text: "Desktop app is not running. Use launch_desktop_app first." };
+            }
+            const clipboardText = await deviceManager.getDesktopClient().getClipboard();
+            return { text: clipboardText || "(empty)" };
+        }
+        case "set_clipboard": {
+            if (!deviceManager.isDesktopRunning()) {
+                return { text: "Desktop app is not running. Use launch_desktop_app first." };
+            }
+            await deviceManager.getDesktopClient().setClipboard(args.text);
+            return { text: "Clipboard set" };
+        }
+        case "get_performance_metrics": {
+            if (!deviceManager.isDesktopRunning()) {
+                return { text: "Desktop app is not running. Use launch_desktop_app first." };
+            }
+            const metrics = await deviceManager.getDesktopClient().getPerformanceMetrics();
+            let result = "Performance metrics:\n";
+            result += `  Memory: ${metrics.memoryUsageMb} MB\n`;
+            if (metrics.cpuPercent !== undefined) {
+                result += `  CPU: ${metrics.cpuPercent}%\n`;
+            }
+            return { text: result.trim() };
         }
         default:
             throw new Error(`Unknown tool: ${name}`);
@@ -616,7 +835,7 @@ async function handleTool(name, args) {
 // Create server
 const server = new Server({
     name: "claude-mobile",
-    version: "2.1.1",
+    version: "2.2.0",
 }, {
     capabilities: {
         tools: {},
@@ -673,7 +892,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("Claude Mobile MCP server running (Android + iOS)");
+    console.error("Claude Mobile MCP server running (Android + iOS + Desktop)");
 }
 main().catch((error) => {
     console.error("Fatal error:", error);

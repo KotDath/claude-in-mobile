@@ -1,7 +1,9 @@
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
+import { DesktopClient } from "./desktop/client.js";
 import { type CompressOptions } from "./utils/image.js";
-export type Platform = "android" | "ios";
+import type { LaunchOptions } from "./desktop/types.js";
+export type Platform = "android" | "ios" | "desktop";
 export interface Device {
     id: string;
     name: string;
@@ -12,8 +14,37 @@ export interface Device {
 export declare class DeviceManager {
     private androidClient;
     private iosClient;
+    private desktopClient;
     private activeDevice?;
+    private activeTarget;
     constructor();
+    /**
+     * Set active target platform
+     */
+    setTarget(target: Platform): void;
+    /**
+     * Get active target and its status
+     */
+    getTarget(): {
+        target: Platform;
+        status: string;
+    };
+    /**
+     * Launch desktop automation (and optionally a user's app via Gradle)
+     */
+    launchDesktopApp(options: LaunchOptions): Promise<string>;
+    /**
+     * Stop desktop app
+     */
+    stopDesktopApp(): Promise<void>;
+    /**
+     * Get desktop client directly
+     */
+    getDesktopClient(): DesktopClient;
+    /**
+     * Check if desktop app is running
+     */
+    isDesktopRunning(): boolean;
     /**
      * Get all connected devices (Android + iOS)
      */
@@ -37,7 +68,7 @@ export declare class DeviceManager {
     /**
      * Get current platform
      */
-    getCurrentPlatform(): Platform | undefined;
+    getCurrentPlatform(): Platform;
     /**
      * Take screenshot with optional compression
      */
@@ -52,27 +83,27 @@ export declare class DeviceManager {
     /**
      * Tap at coordinates
      */
-    tap(x: number, y: number, platform?: Platform): void;
+    tap(x: number, y: number, platform?: Platform): Promise<void>;
     /**
      * Long press
      */
-    longPress(x: number, y: number, durationMs?: number, platform?: Platform): void;
+    longPress(x: number, y: number, durationMs?: number, platform?: Platform): Promise<void>;
     /**
      * Swipe
      */
-    swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number, platform?: Platform): void;
+    swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number, platform?: Platform): Promise<void>;
     /**
      * Swipe direction
      */
-    swipeDirection(direction: "up" | "down" | "left" | "right", platform?: Platform): void;
+    swipeDirection(direction: "up" | "down" | "left" | "right", platform?: Platform): Promise<void>;
     /**
      * Input text
      */
-    inputText(text: string, platform?: Platform): void;
+    inputText(text: string, platform?: Platform): Promise<void>;
     /**
      * Press key
      */
-    pressKey(key: string, platform?: Platform): void;
+    pressKey(key: string, platform?: Platform): Promise<void>;
     /**
      * Launch app
      */
@@ -88,7 +119,7 @@ export declare class DeviceManager {
     /**
      * Get UI hierarchy
      */
-    getUiHierarchy(platform?: Platform): string;
+    getUiHierarchy(platform?: Platform): Promise<string>;
     /**
      * Execute shell command
      */
@@ -118,6 +149,6 @@ export declare class DeviceManager {
     /**
      * Get system info (battery, memory, etc.)
      */
-    getSystemInfo(platform?: Platform): string;
+    getSystemInfo(platform?: Platform): Promise<string>;
 }
 //# sourceMappingURL=device-manager.d.ts.map

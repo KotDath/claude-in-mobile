@@ -232,9 +232,43 @@ export class AdbClient {
      * Get current activity
      */
     getCurrentActivity() {
-        const output = this.exec("shell dumpsys activity activities | grep mResumedActivity");
-        const match = output.match(/(\S+\/\S+)/);
-        return match?.[1] ?? "unknown";
+        try {
+            // Get focused activity (works on most Android versions)
+            const output = this.exec("shell dumpsys activity activities");
+            // Try different patterns for different Android versions
+            const patterns = [
+                /mResumedActivity[^}]*?(\S+\/\.\S+)/, // Android 10+
+                /mResumedActivity[^}]*?(\S+\/\S+)/, // Generic
+                /resumedActivity[^}]*?(\S+\/\S+)/, // Some versions
+                /topResumedActivity[^}]*?(\S+\/\S+)/, // Android 12+
+                /mFocusedActivity[^}]*?(\S+\/\S+)/, // Older Android
+                /ResumedActivity[^}]*?(\S+\/\S+)/i, // Case-insensitive fallback
+            ];
+            for (const pattern of patterns) {
+                const match = output.match(pattern);
+                if (match?.[1]) {
+                    return match[1];
+                }
+            }
+            // Fallback: try getting current focus from window manager
+            const wmOutput = this.exec("shell dumpsys window windows");
+            const focusMatch = wmOutput.match(/mCurrentFocus[^}]*?(\S+\/\S+)/);
+            if (focusMatch?.[1]) {
+                return focusMatch[1];
+            }
+            return "unknown";
+        }
+        catch (error) {
+            // Try alternative method
+            try {
+                const output = this.exec("shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'");
+                const match = output.match(/(\S+\/\S+)/);
+                return match?.[1] ?? "unknown";
+            }
+            catch {
+                return "unknown (could not determine)";
+            }
+        }
     }
     /**
      * Get screen size

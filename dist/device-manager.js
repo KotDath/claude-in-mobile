@@ -1,14 +1,70 @@
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
+import { DesktopClient } from "./desktop/client.js";
 import { compressScreenshot } from "./utils/image.js";
 export class DeviceManager {
     androidClient;
     iosClient;
+    desktopClient;
     activeDevice;
+    activeTarget = "android";
     constructor() {
         this.androidClient = new AdbClient();
         this.iosClient = new IosClient();
+        this.desktopClient = new DesktopClient();
     }
+    // ============ Target Management ============
+    /**
+     * Set active target platform
+     */
+    setTarget(target) {
+        this.activeTarget = target;
+    }
+    /**
+     * Get active target and its status
+     */
+    getTarget() {
+        if (this.activeTarget === "desktop") {
+            const state = this.desktopClient.getState();
+            return { target: "desktop", status: state.status };
+        }
+        const device = this.activeDevice;
+        if (device) {
+            return { target: device.platform, status: device.state };
+        }
+        return { target: this.activeTarget, status: "no device" };
+    }
+    // ============ Desktop Specific ============
+    /**
+     * Launch desktop automation (and optionally a user's app via Gradle)
+     */
+    async launchDesktopApp(options) {
+        await this.desktopClient.launch(options);
+        this.activeTarget = "desktop";
+        if (options.projectPath) {
+            return `Desktop automation started. Also launching app from ${options.projectPath}`;
+        }
+        return "Desktop automation started";
+    }
+    /**
+     * Stop desktop app
+     */
+    async stopDesktopApp() {
+        await this.desktopClient.stop();
+    }
+    /**
+     * Get desktop client directly
+     */
+    getDesktopClient() {
+        return this.desktopClient;
+    }
+    /**
+     * Check if desktop app is running
+     */
+    isDesktopRunning() {
+        return this.desktopClient.isRunning();
+    }
+    // ============ Device Management ============
     /**
      * Get all connected devices (Android + iOS)
      */
@@ -46,6 +102,17 @@ export class DeviceManager {
         catch {
             // simctl not available or no simulators
         }
+        // Add desktop as virtual device if running
+        if (this.desktopClient.isRunning()) {
+            const state = this.desktopClient.getState();
+            devices.push({
+                id: "desktop",
+                name: "Desktop App",
+                platform: "desktop",
+                state: state.status,
+                isSimulator: false
+            });
+        }
         return devices;
     }
     /**
@@ -61,6 +128,20 @@ export class DeviceManager {
      * Set active device
      */
     setDevice(deviceId, platform) {
+        // Handle desktop special case
+        if (deviceId === "desktop" || platform === "desktop") {
+            if (!this.desktopClient.isRunning()) {
+                throw new Error("Desktop app is not running. Use launch_desktop_app first.");
+            }
+            this.activeTarget = "desktop";
+            return {
+                id: "desktop",
+                name: "Desktop App",
+                platform: "desktop",
+                state: "running",
+                isSimulator: false
+            };
+        }
         const devices = this.getAllDevices();
         // Find device by ID
         let device = devices.find(d => d.id === deviceId);
@@ -72,11 +153,12 @@ export class DeviceManager {
             throw new Error(`Device not found: ${deviceId}`);
         }
         this.activeDevice = device;
+        this.activeTarget = device.platform;
         // Set on the appropriate client
         if (device.platform === "android") {
             this.androidClient.setDevice(device.id);
         }
-        else {
+        else if (device.platform === "ios") {
             this.iosClient.setDevice(device.id);
         }
         return device;
@@ -85,30 +167,49 @@ export class DeviceManager {
      * Get active device
      */
     getActiveDevice() {
+        if (this.activeTarget === "desktop" && this.desktopClient.isRunning()) {
+            return {
+                id: "desktop",
+                name: "Desktop App",
+                platform: "desktop",
+                state: "running",
+                isSimulator: false
+            };
+        }
         return this.activeDevice;
     }
     /**
      * Get the appropriate client for current device or specified platform
      */
     getClient(platform) {
-        const targetPlatform = platform ?? this.activeDevice?.platform;
-        if (!targetPlatform) {
-            // Try to auto-detect: prefer Android if available
-            const devices = this.getAllDevices();
-            const booted = devices.find(d => d.state === "device" || d.state === "booted");
-            if (booted) {
-                this.setDevice(booted.id);
-                return booted.platform === "android" ? this.androidClient : this.iosClient;
+        const targetPlatform = platform ?? this.activeTarget;
+        if (targetPlatform === "desktop") {
+            if (!this.desktopClient.isRunning()) {
+                throw new Error("Desktop app is not running. Use launch_desktop_app first.");
             }
-            throw new Error("No active device. Use set_device or list_devices first.");
+            return this.desktopClient;
         }
-        return targetPlatform === "android" ? this.androidClient : this.iosClient;
+        if (!targetPlatform || targetPlatform === "android" || targetPlatform === "ios") {
+            const mobilePlatform = targetPlatform ?? this.activeDevice?.platform;
+            if (!mobilePlatform) {
+                // Try to auto-detect: prefer Android if available
+                const devices = this.getAllDevices().filter(d => d.platform !== "desktop");
+                const booted = devices.find(d => d.state === "device" || d.state === "booted");
+                if (booted) {
+                    this.setDevice(booted.id);
+                    return booted.platform === "android" ? this.androidClient : this.iosClient;
+                }
+                throw new Error("No active device. Use set_device or list_devices first.");
+            }
+            return mobilePlatform === "android" ? this.androidClient : this.iosClient;
+        }
+        throw new Error(`Unknown platform: ${targetPlatform}`);
     }
     /**
      * Get current platform
      */
     getCurrentPlatform() {
-        return this.activeDevice?.platform;
+        return this.activeTarget;
     }
     // ============ Unified Commands ============
     /**
@@ -116,41 +217,49 @@ export class DeviceManager {
      */
     async screenshot(platform, compress = true, options) {
         const client = this.getClient(platform);
-        if (client instanceof AdbClient) {
-            const buffer = client.screenshotRaw();
-            if (compress) {
-                return compressScreenshot(buffer, options);
-            }
-            return { data: buffer.toString("base64"), mimeType: "image/png" };
+        if (client instanceof DesktopClient) {
+            const result = await client.screenshotWithMeta();
+            // Desktop returns JPEG already compressed
+            return { data: result.base64, mimeType: result.mimeType };
         }
-        else {
-            const buffer = client.screenshotRaw();
-            if (compress) {
-                return compressScreenshot(buffer, options);
-            }
-            return { data: buffer.toString("base64"), mimeType: "image/png" };
+        // Mobile clients
+        const buffer = client.screenshotRaw();
+        if (compress) {
+            return compressScreenshot(buffer, options);
         }
+        return { data: buffer.toString("base64"), mimeType: "image/png" };
     }
     /**
      * Take screenshot without compression (legacy)
      */
     screenshotRaw(platform) {
         const client = this.getClient(platform);
+        if (client instanceof DesktopClient) {
+            throw new Error("Use screenshot() for desktop platform");
+        }
         return client.screenshot();
     }
     /**
      * Tap at coordinates
      */
-    tap(x, y, platform) {
+    async tap(x, y, platform) {
         const client = this.getClient(platform);
-        client.tap(x, y);
+        if (client instanceof DesktopClient) {
+            await client.tap(x, y);
+        }
+        else {
+            client.tap(x, y);
+        }
     }
     /**
      * Long press
      */
-    longPress(x, y, durationMs = 1000, platform) {
+    async longPress(x, y, durationMs = 1000, platform) {
         const client = this.getClient(platform);
-        if (client instanceof AdbClient) {
+        if (client instanceof DesktopClient) {
+            await client.longPress(x, y, durationMs);
+        }
+        else if (client instanceof AdbClient) {
             client.longPress(x, y, durationMs);
         }
         else {
@@ -161,36 +270,59 @@ export class DeviceManager {
     /**
      * Swipe
      */
-    swipe(x1, y1, x2, y2, durationMs = 300, platform) {
+    async swipe(x1, y1, x2, y2, durationMs = 300, platform) {
         const client = this.getClient(platform);
-        client.swipe(x1, y1, x2, y2, durationMs);
+        if (client instanceof DesktopClient) {
+            await client.swipe(x1, y1, x2, y2, durationMs);
+        }
+        else {
+            client.swipe(x1, y1, x2, y2, durationMs);
+        }
     }
     /**
      * Swipe direction
      */
-    swipeDirection(direction, platform) {
+    async swipeDirection(direction, platform) {
         const client = this.getClient(platform);
-        client.swipeDirection(direction);
+        if (client instanceof DesktopClient) {
+            await client.swipeDirection(direction);
+        }
+        else {
+            client.swipeDirection(direction);
+        }
     }
     /**
      * Input text
      */
-    inputText(text, platform) {
+    async inputText(text, platform) {
         const client = this.getClient(platform);
-        client.inputText(text);
+        if (client instanceof DesktopClient) {
+            await client.inputText(text);
+        }
+        else {
+            client.inputText(text);
+        }
     }
     /**
      * Press key
      */
-    pressKey(key, platform) {
+    async pressKey(key, platform) {
         const client = this.getClient(platform);
-        client.pressKey(key);
+        if (client instanceof DesktopClient) {
+            await client.pressKey(key);
+        }
+        else {
+            client.pressKey(key);
+        }
     }
     /**
      * Launch app
      */
     launchApp(packageOrBundleId, platform) {
         const client = this.getClient(platform);
+        if (client instanceof DesktopClient) {
+            return client.launchApp(packageOrBundleId);
+        }
         return client.launchApp(packageOrBundleId);
     }
     /**
@@ -198,13 +330,21 @@ export class DeviceManager {
      */
     stopApp(packageOrBundleId, platform) {
         const client = this.getClient(platform);
-        client.stopApp(packageOrBundleId);
+        if (client instanceof DesktopClient) {
+            client.stopApp(packageOrBundleId);
+        }
+        else {
+            client.stopApp(packageOrBundleId);
+        }
     }
     /**
      * Install app
      */
     installApp(path, platform) {
         const client = this.getClient(platform);
+        if (client instanceof DesktopClient) {
+            return "Desktop platform doesn't support app installation";
+        }
         if (client instanceof AdbClient) {
             return client.installApk(path);
         }
@@ -215,8 +355,13 @@ export class DeviceManager {
     /**
      * Get UI hierarchy
      */
-    getUiHierarchy(platform) {
+    async getUiHierarchy(platform) {
         const client = this.getClient(platform);
+        if (client instanceof DesktopClient) {
+            const hierarchy = await client.getUiHierarchy();
+            // Format as text for compatibility
+            return formatDesktopHierarchy(hierarchy);
+        }
         return client.getUiHierarchy();
     }
     /**
@@ -224,6 +369,9 @@ export class DeviceManager {
      */
     shell(command, platform) {
         const client = this.getClient(platform);
+        if (client instanceof DesktopClient) {
+            return client.shell(command);
+        }
         return client.shell(command);
     }
     /**
@@ -242,6 +390,13 @@ export class DeviceManager {
      * Get device logs
      */
     getLogs(options = {}) {
+        const targetPlatform = options.platform ?? this.activeTarget;
+        if (targetPlatform === "desktop") {
+            const logs = this.desktopClient.getLogs({
+                limit: options.lines ?? 100
+            });
+            return logs.map(l => `[${l.type}] ${l.message}`).join("\n");
+        }
         const client = this.getClient(options.platform);
         if (client instanceof AdbClient) {
             return client.getLogs({
@@ -263,6 +418,11 @@ export class DeviceManager {
      * Clear logs
      */
     clearLogs(platform) {
+        const targetPlatform = platform ?? this.activeTarget;
+        if (targetPlatform === "desktop") {
+            this.desktopClient.clearLogs();
+            return "Desktop logs cleared";
+        }
         const client = this.getClient(platform);
         if (client instanceof AdbClient) {
             client.clearLogs();
@@ -275,7 +435,12 @@ export class DeviceManager {
     /**
      * Get system info (battery, memory, etc.)
      */
-    getSystemInfo(platform) {
+    async getSystemInfo(platform) {
+        const targetPlatform = platform ?? this.activeTarget;
+        if (targetPlatform === "desktop") {
+            const metrics = await this.desktopClient.getPerformanceMetrics();
+            return `=== Desktop Performance ===\nMemory: ${metrics.memoryUsageMb} MB${metrics.cpuPercent ? `\nCPU: ${metrics.cpuPercent}%` : ''}`;
+        }
         const client = this.getClient(platform);
         if (client instanceof AdbClient) {
             const battery = client.getBatteryInfo();
@@ -286,5 +451,27 @@ export class DeviceManager {
             return "System info is only available for Android devices.";
         }
     }
+}
+/**
+ * Format desktop UI hierarchy as text
+ */
+function formatDesktopHierarchy(hierarchy) {
+    const lines = [];
+    lines.push(`Scale Factor: ${hierarchy.scaleFactor}`);
+    lines.push(`\n=== Windows (${hierarchy.windows.length}) ===`);
+    for (const win of hierarchy.windows) {
+        const focused = win.focused ? " [FOCUSED]" : "";
+        lines.push(`  ${win.title}${focused} (${win.bounds.width}x${win.bounds.height})`);
+    }
+    lines.push(`\n=== UI Elements (${hierarchy.elements.length}) ===`);
+    for (const el of hierarchy.elements) {
+        const text = el.text ? `"${el.text}"` : "";
+        const role = el.role || el.className;
+        const clickable = el.clickable ? " [clickable]" : "";
+        const focused = el.focused ? " [focused]" : "";
+        lines.push(`[${el.index}] ${role} ${text}${clickable}${focused} ` +
+            `(${el.centerX}, ${el.centerY}) [${el.bounds.x},${el.bounds.y},${el.bounds.width},${el.bounds.height}]`);
+    }
+    return lines.join("\n");
 }
 //# sourceMappingURL=device-manager.js.map

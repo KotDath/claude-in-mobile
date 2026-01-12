@@ -1,0 +1,285 @@
+package com.anthropic.desktop
+
+import java.awt.Robot
+import java.awt.Toolkit
+import java.awt.datatransfer.DataFlavor
+import java.awt.datatransfer.StringSelection
+import java.awt.event.InputEvent
+import java.awt.event.KeyEvent
+import kotlin.math.max
+
+/**
+ * Controls mouse and keyboard input using java.awt.Robot
+ * Handles HiDPI coordinate conversion
+ */
+class InputController {
+    private val robot = Robot().apply {
+        autoDelay = 10
+        isAutoWaitForIdle = true
+    }
+
+    private val scaleFactor: Double = detectScaleFactor()
+
+    /**
+     * Detect HiDPI scale factor
+     */
+    private fun detectScaleFactor(): Double {
+        return try {
+            val ge = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment()
+            val device = ge.defaultScreenDevice
+            val config = device.defaultConfiguration
+            config.defaultTransform.scaleX
+        } catch (e: Exception) {
+            1.0
+        }
+    }
+
+    /**
+     * Get the current scale factor
+     */
+    fun getScaleFactor(): Double = scaleFactor
+
+    /**
+     * Convert logical coordinates to physical
+     */
+    private fun toPhysical(x: Int, y: Int): Pair<Int, Int> {
+        return Pair(
+            (x * scaleFactor).toInt(),
+            (y * scaleFactor).toInt()
+        )
+    }
+
+    /**
+     * Tap at logical coordinates
+     */
+    fun tap(x: Int, y: Int) {
+        val (px, py) = toPhysical(x, y)
+        robot.mouseMove(px, py)
+        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
+        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+    }
+
+    /**
+     * Double tap at coordinates
+     */
+    fun doubleTap(x: Int, y: Int) {
+        tap(x, y)
+        Thread.sleep(50)
+        tap(x, y)
+    }
+
+    /**
+     * Long press at coordinates
+     */
+    fun longPress(x: Int, y: Int, durationMs: Int = 1000) {
+        val (px, py) = toPhysical(x, y)
+        robot.mouseMove(px, py)
+        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
+        Thread.sleep(durationMs.toLong())
+        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+    }
+
+    /**
+     * Right click at coordinates
+     */
+    fun rightClick(x: Int, y: Int) {
+        val (px, py) = toPhysical(x, y)
+        robot.mouseMove(px, py)
+        robot.mousePress(InputEvent.BUTTON3_DOWN_MASK)
+        robot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK)
+    }
+
+    /**
+     * Swipe gesture from one point to another
+     */
+    fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int = 300) {
+        val steps = max(10, durationMs / 16)
+        val dx = (x2 - x1).toDouble() / steps
+        val dy = (y2 - y1).toDouble() / steps
+        val delay = durationMs.toLong() / steps
+
+        val (px1, py1) = toPhysical(x1, y1)
+        robot.mouseMove(px1, py1)
+        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
+
+        for (i in 1..steps) {
+            val (px, py) = toPhysical(
+                (x1 + dx * i).toInt(),
+                (y1 + dy * i).toInt()
+            )
+            robot.mouseMove(px, py)
+            Thread.sleep(delay)
+        }
+
+        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+    }
+
+    /**
+     * Swipe in a direction from screen center
+     */
+    fun swipeDirection(direction: String, distance: Int = 400) {
+        val screenSize = Toolkit.getDefaultToolkit().screenSize
+        val centerX = (screenSize.width / scaleFactor / 2).toInt()
+        val centerY = (screenSize.height / scaleFactor / 2).toInt()
+
+        val (x1, y1, x2, y2) = when (direction.lowercase()) {
+            "up" -> listOf(centerX, centerY + distance / 2, centerX, centerY - distance / 2)
+            "down" -> listOf(centerX, centerY - distance / 2, centerX, centerY + distance / 2)
+            "left" -> listOf(centerX + distance / 2, centerY, centerX - distance / 2, centerY)
+            "right" -> listOf(centerX - distance / 2, centerY, centerX + distance / 2, centerY)
+            else -> throw IllegalArgumentException("Invalid direction: $direction")
+        }
+
+        swipe(x1, y1, x2, y2)
+    }
+
+    /**
+     * Scroll wheel
+     */
+    fun scroll(amount: Int, x: Int? = null, y: Int? = null) {
+        if (x != null && y != null) {
+            val (px, py) = toPhysical(x, y)
+            robot.mouseMove(px, py)
+        }
+        robot.mouseWheel(amount)
+    }
+
+    /**
+     * Type text using clipboard (most reliable cross-platform method)
+     */
+    fun typeText(text: String) {
+        val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+
+        // Save original clipboard content
+        val original = try {
+            clipboard.getData(DataFlavor.stringFlavor) as? String
+        } catch (e: Exception) {
+            null
+        }
+
+        // Set new content
+        clipboard.setContents(StringSelection(text), null)
+
+        // Paste using platform-specific shortcut
+        val isMac = System.getProperty("os.name").lowercase().contains("mac")
+        val modifier = if (isMac) KeyEvent.VK_META else KeyEvent.VK_CONTROL
+
+        robot.keyPress(modifier)
+        robot.keyPress(KeyEvent.VK_V)
+        robot.keyRelease(KeyEvent.VK_V)
+        robot.keyRelease(modifier)
+
+        // Wait for paste to complete
+        Thread.sleep(100)
+
+        // Restore original clipboard
+        if (original != null) {
+            clipboard.setContents(StringSelection(original), null)
+        }
+    }
+
+    /**
+     * Type text character by character (slower but works without clipboard)
+     */
+    fun typeTextDirect(text: String) {
+        for (char in text) {
+            typeChar(char)
+        }
+    }
+
+    /**
+     * Type a single character
+     */
+    private fun typeChar(char: Char) {
+        val keyCode = KeyEvent.getExtendedKeyCodeForChar(char.code)
+        if (keyCode == KeyEvent.VK_UNDEFINED) {
+            // Use clipboard for special characters
+            typeText(char.toString())
+            return
+        }
+
+        val needsShift = char.isUpperCase() || char in "~!@#$%^&*()_+{}|:\"<>?"
+
+        if (needsShift) {
+            robot.keyPress(KeyEvent.VK_SHIFT)
+        }
+        robot.keyPress(keyCode)
+        robot.keyRelease(keyCode)
+        if (needsShift) {
+            robot.keyRelease(KeyEvent.VK_SHIFT)
+        }
+    }
+
+    /**
+     * Press a key combination
+     */
+    fun keyEvent(key: String, modifiers: List<String>? = null) {
+        val keyCode = mapKeyCode(key)
+
+        // Press modifiers
+        val modifierCodes = modifiers?.map { mapModifier(it) } ?: emptyList()
+        modifierCodes.forEach { robot.keyPress(it) }
+
+        // Press and release key
+        robot.keyPress(keyCode)
+        robot.keyRelease(keyCode)
+
+        // Release modifiers in reverse order
+        modifierCodes.reversed().forEach { robot.keyRelease(it) }
+    }
+
+    /**
+     * Map key name to KeyEvent code
+     */
+    private fun mapKeyCode(key: String): Int {
+        return when (key.uppercase()) {
+            "ENTER", "RETURN" -> KeyEvent.VK_ENTER
+            "TAB" -> KeyEvent.VK_TAB
+            "SPACE" -> KeyEvent.VK_SPACE
+            "BACKSPACE", "BACK_SPACE" -> KeyEvent.VK_BACK_SPACE
+            "DELETE", "DEL" -> KeyEvent.VK_DELETE
+            "ESCAPE", "ESC" -> KeyEvent.VK_ESCAPE
+            "HOME" -> KeyEvent.VK_HOME
+            "END" -> KeyEvent.VK_END
+            "PAGE_UP", "PAGEUP" -> KeyEvent.VK_PAGE_UP
+            "PAGE_DOWN", "PAGEDOWN" -> KeyEvent.VK_PAGE_DOWN
+            "UP", "ARROW_UP" -> KeyEvent.VK_UP
+            "DOWN", "ARROW_DOWN" -> KeyEvent.VK_DOWN
+            "LEFT", "ARROW_LEFT" -> KeyEvent.VK_LEFT
+            "RIGHT", "ARROW_RIGHT" -> KeyEvent.VK_RIGHT
+            "F1" -> KeyEvent.VK_F1
+            "F2" -> KeyEvent.VK_F2
+            "F3" -> KeyEvent.VK_F3
+            "F4" -> KeyEvent.VK_F4
+            "F5" -> KeyEvent.VK_F5
+            "F6" -> KeyEvent.VK_F6
+            "F7" -> KeyEvent.VK_F7
+            "F8" -> KeyEvent.VK_F8
+            "F9" -> KeyEvent.VK_F9
+            "F10" -> KeyEvent.VK_F10
+            "F11" -> KeyEvent.VK_F11
+            "F12" -> KeyEvent.VK_F12
+            else -> {
+                // Try to get key code for single character
+                if (key.length == 1) {
+                    KeyEvent.getExtendedKeyCodeForChar(key[0].uppercaseChar().code)
+                } else {
+                    throw IllegalArgumentException("Unknown key: $key")
+                }
+            }
+        }
+    }
+
+    /**
+     * Map modifier name to KeyEvent code
+     */
+    private fun mapModifier(modifier: String): Int {
+        return when (modifier.lowercase()) {
+            "ctrl", "control" -> KeyEvent.VK_CONTROL
+            "shift" -> KeyEvent.VK_SHIFT
+            "alt", "option" -> KeyEvent.VK_ALT
+            "meta", "cmd", "command", "win", "windows" -> KeyEvent.VK_META
+            else -> throw IllegalArgumentException("Unknown modifier: $modifier")
+        }
+    }
+}

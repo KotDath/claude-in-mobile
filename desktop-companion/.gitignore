@@ -1,0 +1,11 @@
+# Gradle
+.gradle/
+build/
+!build/install/desktop-companion/
+
+# IntelliJ
+.idea/
+*.iml
+
+# Local
+local.properties
