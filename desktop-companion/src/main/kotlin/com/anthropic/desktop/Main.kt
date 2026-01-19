@@ -94,10 +94,13 @@ fun main() = runBlocking {
         inputController.scroll(amount, x, y)
     }
 
-    // Input text
+    // Input text (use direct typing for Compose Desktop compatibility)
     server.registerVoidHandler("input_text") { params ->
         val text = params.stringOrThrow("text")
-        inputController.typeText(text)
+        // Use typeTextDirect for Compose Desktop - clipboard paste often fails
+        // Small delay to ensure target field has focus
+        Thread.sleep(50)
+        inputController.typeTextDirect(text)
     }
 
     // Key event

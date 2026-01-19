@@ -1,12 +1,24 @@
 package com.anthropic.desktop.accessibility
 
 import com.anthropic.desktop.*
+import java.util.concurrent.TimeUnit
 
 /**
  * macOS Accessibility implementation
  * Uses AppleScript as a simpler alternative to JNA AXUIElement bindings
  */
 class MacOSAccessibility : BaseAccessibilityService() {
+
+    // Cache UI hierarchy to avoid repeated expensive AppleScript calls
+    @Volatile
+    private var cachedHierarchy: UiHierarchy? = null
+    @Volatile
+    private var hierarchyCacheTimestamp: Long = 0
+    private val HIERARCHY_CACHE_TTL_MS = 5000L // 5 seconds cache
+
+    companion object {
+        private const val APPLESCRIPT_TIMEOUT_SECONDS = 20L
+    }
 
     override fun checkPermissions(): PermissionStatus {
         return try {
@@ -60,25 +72,58 @@ class MacOSAccessibility : BaseAccessibilityService() {
     }
 
     override fun getHierarchy(windowId: String?): UiHierarchy {
+        val now = System.currentTimeMillis()
+        val cached = cachedHierarchy
+
+        // Return cached hierarchy if fresh (UI doesn't change that fast)
+        if (cached != null && (now - hierarchyCacheTimestamp) < HIERARCHY_CACHE_TTL_MS) {
+            System.err.println("Returning cached UI hierarchy (age: ${now - hierarchyCacheTimestamp}ms)")
+            return cached
+        }
+
         resetIndex()
         val windows = windowManager.getWindows()
         val scaleFactor = ScreenCapture().getScaleFactor()
 
-        // Try to get UI elements from frontmost app
+        // Try to get UI elements from frontmost app (with timeout)
         val elements = try {
             getUIElementsFromFrontmostApp()
         } catch (e: Exception) {
             System.err.println("Failed to get UI elements: ${e.message}")
-            emptyList()
+            // Fallback: return simplified elements from windows
+            getSimplifiedElements(windows)
         }
 
         cachedElements = elements
 
-        return UiHierarchy(
+        val hierarchy = UiHierarchy(
             windows = windows,
             elements = elements,
             scaleFactor = scaleFactor
         )
+
+        // Update cache
+        cachedHierarchy = hierarchy
+        hierarchyCacheTimestamp = now
+
+        return hierarchy
+    }
+
+    /**
+     * Simplified fallback - return only window bounds (no deep UI traversal)
+     */
+    private fun getSimplifiedElements(windows: List<WindowInfo>): List<UiElement> {
+        return windows.map { win ->
+            createElement(
+                text = win.title,
+                role = "AXWindow",
+                x = win.bounds.x,
+                y = win.bounds.y,
+                width = win.bounds.width,
+                height = win.bounds.height,
+                clickable = true
+            )
+        }
     }
 
     private fun getUIElementsFromFrontmostApp(): List<UiElement> {
@@ -86,6 +131,8 @@ class MacOSAccessibility : BaseAccessibilityService() {
 
         try {
             // Get UI elements using AppleScript
+            // FIXED: Limited depth traversal (2 levels) instead of "entire contents"
+            // This prevents 10-20 second timeouts on complex windows
             val script = """
                 tell application "System Events"
                     set frontApp to first application process whose frontmost is true
@@ -97,11 +144,10 @@ class MacOSAccessibility : BaseAccessibilityService() {
                             set winPos to position of win
                             set winSize to size of win
 
-                            -- Get all UI elements in the window
-                            set allElements to entire contents of win
-                            repeat with elem in allElements
+                            -- FIXED: Only get direct children (depth=1), NOT "entire contents"
+                            -- This avoids exponential traversal time
+                            repeat with elem in (UI elements of win)
                                 try
-                                    set elemClass to class of elem as string
                                     set elemRole to role of elem
                                     set elemTitle to ""
                                     set elemDesc to ""
@@ -114,7 +160,7 @@ class MacOSAccessibility : BaseAccessibilityService() {
                                         set elemTitle to title of elem
                                     end try
                                     try
-                                        set elemTitle to value of elem
+                                        if elemTitle is "" then set elemTitle to value of elem
                                     end try
                                     try
                                         set elemDesc to description of elem
@@ -135,6 +181,45 @@ class MacOSAccessibility : BaseAccessibilityService() {
                                     if item 1 of elemSize > 0 and item 2 of elemSize > 0 then
                                         set end of uiElements to {elemRole, elemTitle, elemDesc, item 1 of elemPos, item 2 of elemPos, item 1 of elemSize, item 2 of elemSize, elemEnabled, elemFocused}
                                     end if
+
+                                    -- Depth=2: Get children of containers (but no deeper)
+                                    if elemRole is in {"AXGroup", "AXScrollArea", "AXSplitGroup", "AXTabGroup"} then
+                                        try
+                                            repeat with child in (UI elements of elem)
+                                                try
+                                                    set childRole to role of child
+                                                    set childTitle to ""
+                                                    set childPos to {0, 0}
+                                                    set childSize to {0, 0}
+                                                    set childEnabled to true
+                                                    set childFocused to false
+
+                                                    try
+                                                        set childTitle to title of child
+                                                    end try
+                                                    try
+                                                        if childTitle is "" then set childTitle to value of child
+                                                    end try
+                                                    try
+                                                        set childPos to position of child
+                                                    end try
+                                                    try
+                                                        set childSize to size of child
+                                                    end try
+                                                    try
+                                                        set childEnabled to enabled of child
+                                                    end try
+                                                    try
+                                                        set childFocused to focused of child
+                                                    end try
+
+                                                    if item 1 of childSize > 0 and item 2 of childSize > 0 then
+                                                        set end of uiElements to {childRole, childTitle, "", item 1 of childPos, item 2 of childPos, item 1 of childSize, item 2 of childSize, childEnabled, childFocused}
+                                                    end if
+                                                end try
+                                            end repeat
+                                        end try
+                                    end if
                                 end try
                             end repeat
                         end repeat
@@ -145,10 +230,24 @@ class MacOSAccessibility : BaseAccessibilityService() {
             """.trimIndent()
 
             val process = ProcessBuilder("osascript", "-e", script).start()
-            val output = process.inputStream.bufferedReader().readText()
-            val exitCode = process.waitFor()
 
-            if (exitCode == 0 && output.isNotBlank()) {
+            // FIXED: Add timeout to prevent hanging (was causing 45s timeouts)
+            val completed = process.waitFor(APPLESCRIPT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+
+            if (!completed) {
+                process.destroyForcibly()
+                System.err.println("AppleScript UI hierarchy timeout (>${APPLESCRIPT_TIMEOUT_SECONDS}s) - killing process")
+                // Return empty list, caller will use fallback
+                return elements
+            }
+
+            val output = process.inputStream.bufferedReader().readText()
+            val stderr = process.errorStream.bufferedReader().readText()
+            val exitCode = process.exitValue()
+
+            if (exitCode != 0) {
+                System.err.println("AppleScript UI elements failed (exit $exitCode): $stderr")
+            } else if (output.isNotBlank()) {
                 parseAppleScriptElements(output, elements)
             }
         } catch (e: Exception) {

@@ -179,16 +179,108 @@ class InputController {
     }
 
     /**
-     * Type text character by character (slower but works without clipboard)
+     * Type text character by character (slower but works with Compose Desktop)
+     * This is more reliable than clipboard paste for Compose TextField
      */
     fun typeTextDirect(text: String) {
+        // Disable auto-wait-for-idle temporarily (Compose has separate event loop)
+        val wasAutoWait = robot.isAutoWaitForIdle
+        robot.isAutoWaitForIdle = false
+
         for (char in text) {
-            typeChar(char)
+            typeCharDirect(char)
+            Thread.sleep(10) // Small delay between characters for reliability
+        }
+
+        robot.isAutoWaitForIdle = wasAutoWait
+    }
+
+    /**
+     * Type a single character directly via Robot (no clipboard fallback)
+     */
+    private fun typeCharDirect(char: Char) {
+        // Handle special characters that need shift
+        val shiftChars = mapOf(
+            '!' to KeyEvent.VK_1,
+            '@' to KeyEvent.VK_2,
+            '#' to KeyEvent.VK_3,
+            '$' to KeyEvent.VK_4,
+            '%' to KeyEvent.VK_5,
+            '^' to KeyEvent.VK_6,
+            '&' to KeyEvent.VK_7,
+            '*' to KeyEvent.VK_8,
+            '(' to KeyEvent.VK_9,
+            ')' to KeyEvent.VK_0,
+            '_' to KeyEvent.VK_MINUS,
+            '+' to KeyEvent.VK_EQUALS,
+            '{' to KeyEvent.VK_OPEN_BRACKET,
+            '}' to KeyEvent.VK_CLOSE_BRACKET,
+            '|' to KeyEvent.VK_BACK_SLASH,
+            ':' to KeyEvent.VK_SEMICOLON,
+            '"' to KeyEvent.VK_QUOTE,
+            '<' to KeyEvent.VK_COMMA,
+            '>' to KeyEvent.VK_PERIOD,
+            '?' to KeyEvent.VK_SLASH,
+            '~' to KeyEvent.VK_BACK_QUOTE
+        )
+
+        // Handle non-shift special characters
+        val plainChars = mapOf(
+            '-' to KeyEvent.VK_MINUS,
+            '=' to KeyEvent.VK_EQUALS,
+            '[' to KeyEvent.VK_OPEN_BRACKET,
+            ']' to KeyEvent.VK_CLOSE_BRACKET,
+            '\\' to KeyEvent.VK_BACK_SLASH,
+            ';' to KeyEvent.VK_SEMICOLON,
+            '\'' to KeyEvent.VK_QUOTE,
+            ',' to KeyEvent.VK_COMMA,
+            '.' to KeyEvent.VK_PERIOD,
+            '/' to KeyEvent.VK_SLASH,
+            '`' to KeyEvent.VK_BACK_QUOTE,
+            ' ' to KeyEvent.VK_SPACE
+        )
+
+        when {
+            char in shiftChars -> {
+                robot.keyPress(KeyEvent.VK_SHIFT)
+                robot.keyPress(shiftChars[char]!!)
+                robot.keyRelease(shiftChars[char]!!)
+                robot.keyRelease(KeyEvent.VK_SHIFT)
+            }
+            char in plainChars -> {
+                robot.keyPress(plainChars[char]!!)
+                robot.keyRelease(plainChars[char]!!)
+            }
+            char.isUpperCase() -> {
+                robot.keyPress(KeyEvent.VK_SHIFT)
+                val keyCode = KeyEvent.getExtendedKeyCodeForChar(char.lowercaseChar().code)
+                if (keyCode != KeyEvent.VK_UNDEFINED) {
+                    robot.keyPress(keyCode)
+                    robot.keyRelease(keyCode)
+                }
+                robot.keyRelease(KeyEvent.VK_SHIFT)
+            }
+            char.isLetter() || char.isDigit() -> {
+                val keyCode = KeyEvent.getExtendedKeyCodeForChar(char.code)
+                if (keyCode != KeyEvent.VK_UNDEFINED) {
+                    robot.keyPress(keyCode)
+                    robot.keyRelease(keyCode)
+                }
+            }
+            else -> {
+                // For any other character, try getExtendedKeyCodeForChar
+                val keyCode = KeyEvent.getExtendedKeyCodeForChar(char.code)
+                if (keyCode != KeyEvent.VK_UNDEFINED) {
+                    robot.keyPress(keyCode)
+                    robot.keyRelease(keyCode)
+                }
+                // Skip if undefined (emoji, etc.)
+            }
         }
     }
 
     /**
-     * Type a single character
+     * Type a single character (legacy - uses clipboard fallback)
      */
     private fun typeChar(char: Char) {
         val keyCode = KeyEvent.getExtendedKeyCodeForChar(char.code)
