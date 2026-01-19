@@ -9,11 +9,17 @@ import java.util.Base64
 import javax.imageio.IIOImage
 import javax.imageio.ImageIO
 import javax.imageio.ImageWriteParam
+import java.awt.RenderingHints
+import java.awt.Image
 
 /**
  * Handles screen capture with JPEG compression and HiDPI support
  */
 class ScreenCapture {
+    companion object {
+        // API limit for many-image requests
+        const val MAX_DIMENSION = 2000
+    }
     private val robot = Robot()
 
     /**
@@ -71,16 +77,21 @@ class ScreenCapture {
         }
 
         // Capture image
-        val image = robot.createScreenCapture(bounds)
+        var image = robot.createScreenCapture(bounds)
+
+        // Resize if exceeds API limit (2000px max dimension)
+        val resizeResult = resizeIfNeeded(image)
+        image = resizeResult.first
+        val resizeRatio = resizeResult.second
 
         // Compress to JPEG
         val base64 = compressToJpegBase64(image, quality)
 
-        // Return logical dimensions (divide by scale factor)
+        // Return logical dimensions (divide by scale factor, accounting for resize)
         return ScreenshotResult(
             base64 = base64,
-            width = (bounds.width / scaleFactor).toInt(),
-            height = (bounds.height / scaleFactor).toInt(),
+            width = ((bounds.width / scaleFactor) * resizeRatio).toInt(),
+            height = ((bounds.height / scaleFactor) * resizeRatio).toInt(),
             scaleFactor = scaleFactor
         )
     }
@@ -99,13 +110,19 @@ class ScreenCapture {
             (height * scaleFactor).toInt()
         )
 
-        val image = robot.createScreenCapture(physicalBounds)
+        var image = robot.createScreenCapture(physicalBounds)
+
+        // Resize if exceeds API limit
+        val resizeResult = resizeIfNeeded(image)
+        image = resizeResult.first
+        val resizeRatio = resizeResult.second
+
         val base64 = compressToJpegBase64(image, quality)
 
         return ScreenshotResult(
             base64 = base64,
-            width = width,
-            height = height,
+            width = (width * resizeRatio).toInt(),
+            height = (height * resizeRatio).toInt(),
             scaleFactor = scaleFactor
         )
     }
@@ -140,6 +157,40 @@ class ScreenCapture {
         writer.dispose()
 
         return Base64.getEncoder().encodeToString(baos.toByteArray())
+    }
+
+    /**
+     * Resize image if it exceeds MAX_DIMENSION on either side
+     * Returns the resized image and the resize ratio (1.0 if no resize)
+     */
+    private fun resizeIfNeeded(image: BufferedImage): Pair<BufferedImage, Double> {
+        val width = image.width
+        val height = image.height
+
+        // Check if resize is needed
+        if (width <= MAX_DIMENSION && height <= MAX_DIMENSION) {
+            return Pair(image, 1.0)
+        }
+
+        // Calculate resize ratio to fit within MAX_DIMENSION
+        val ratio = minOf(
+            MAX_DIMENSION.toDouble() / width,
+            MAX_DIMENSION.toDouble() / height
+        )
+
+        val newWidth = (width * ratio).toInt()
+        val newHeight = (height * ratio).toInt()
+
+        // Create scaled image with high quality
+        val scaledImage = BufferedImage(newWidth, newHeight, BufferedImage.TYPE_INT_RGB)
+        val g2d = scaledImage.createGraphics()
+        g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+        g2d.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        g2d.drawImage(image, 0, 0, newWidth, newHeight, null)
+        g2d.dispose()
+
+        return Pair(scaledImage, ratio)
     }
 
     /**

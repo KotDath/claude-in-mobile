@@ -79,23 +79,33 @@ class WindowManager {
         val windows = mutableListOf<WindowInfo>()
 
         try {
-            // Use AppleScript to get window list - includes ALL processes (not just foreground)
-            // This script also catches Java/Kotlin/Compose Desktop apps
+            // Use AppleScript to get window list from ALL processes (not just visible ones)
+            // This catches windows on secondary monitors and background processes
+            // The key fix: removed "visible is true" filter to catch all windows
             val script = """
                 tell application "System Events"
                     set windowList to {}
-                    -- Get all processes with windows (not just foreground apps)
-                    repeat with proc in (processes whose visible is true)
+                    -- Get ALL processes (removed "visible is true" to catch windows on all monitors)
+                    repeat with proc in processes
                         set procName to name of proc
                         try
-                            repeat with win in windows of proc
-                                try
-                                    set winName to name of win
-                                    set winPos to position of win
-                                    set winSize to size of win
-                                    set end of windowList to {procName, winName, item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
-                                end try
-                            end repeat
+                            -- Check if process has any windows
+                            if (count of windows of proc) > 0 then
+                                repeat with win in windows of proc
+                                    try
+                                        -- Check if window has valid position (is on screen, not minimized)
+                                        if exists (position of win) then
+                                            set winName to name of win
+                                            set winPos to position of win
+                                            set winSize to size of win
+                                            -- Only add windows with valid size (width/height > 0)
+                                            if (item 1 of winSize) > 0 and (item 2 of winSize) > 0 then
+                                                set end of windowList to {procName, winName, item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
+                                            end if
+                                        end if
+                                    end try
+                                end repeat
+                            end if
                         end try
                     end repeat
                     return windowList
@@ -113,22 +123,27 @@ class WindowManager {
             System.err.println("Error getting macOS windows: ${e.message}")
         }
 
-        // Additionally scan for Java/JVM processes that might not appear in standard list
+        // Additionally scan for Java/JVM/Compose processes specifically
+        // These may have special process names that aren't caught in the general scan
         try {
             val javaScript = """
                 tell application "System Events"
                     set javaWindows to {}
-                    -- Scan for java, kotlin, JetBrains, gradle processes
                     repeat with proc in processes
                         set procName to name of proc
-                        if procName contains "java" or procName contains "kotlin" or procName contains "JetBrains" or procName contains "gradle" or procName contains "idea" then
+                        -- Expanded list to catch more Java/Compose apps
+                        if procName contains "java" or procName contains "kotlin" or procName contains "JetBrains" or procName contains "gradle" or procName contains "idea" or procName contains "Compose" or procName contains "Desktop" then
                             try
                                 repeat with win in windows of proc
                                     try
-                                        set winName to name of win
-                                        set winPos to position of win
-                                        set winSize to size of win
-                                        set end of javaWindows to {procName, winName, item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
+                                        if exists (position of win) then
+                                            set winName to name of win
+                                            set winPos to position of win
+                                            set winSize to size of win
+                                            if (item 1 of winSize) > 0 and (item 2 of winSize) > 0 then
+                                                set end of javaWindows to {procName, winName, item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
+                                            end if
+                                        end if
                                     end try
                                 end repeat
                             end try
@@ -142,13 +157,14 @@ class WindowManager {
             val javaOutput = javaProcess.inputStream.bufferedReader().readText()
             javaProcess.waitFor()
 
-            // Parse and add Java windows (avoid duplicates)
-            val existingTitles = windows.map { it.title }.toSet()
+            // Parse and add Java windows (avoid duplicates by checking title + bounds)
+            val existingKeys = windows.map { "${it.title}_${it.bounds.x}_${it.bounds.y}" }.toSet()
             val javaWindows = mutableListOf<WindowInfo>()
             parseAppleScriptWindowList(javaOutput, javaWindows)
 
             javaWindows.forEach { win ->
-                if (win.title !in existingTitles) {
+                val key = "${win.title}_${win.bounds.x}_${win.bounds.y}"
+                if (key !in existingKeys) {
                     windows.add(win.copy(id = "mac_java_${windows.size}"))
                 }
             }
