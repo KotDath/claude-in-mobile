@@ -27,6 +27,14 @@ export interface Device {
   host?: string;
 }
 
+export interface LogOptions {
+  lines?: number;
+  priority?: string;
+  unit?: string;
+  grep?: string;
+  since?: string;
+}
+
 export class AuroraClient {
   private async runCommand(command: string): Promise<string> {
     try {
@@ -191,26 +199,28 @@ export class AuroraClient {
 
   /**
    * Execute a shell command on the Aurora device
-   * @param command - Shell command to execute
+   *
+   * WARNING: This method executes arbitrary commands on the device.
+   * Input validation should be performed at the call site.
+   *
+   * @param command - Shell command to execute (must be validated/sanitized)
    * @returns Command output
    */
   async shell(command: string): Promise<string> {
-    const output = await this.runCommand(`audb shell ${command}`);
-    return output;
+    return await this.runCommand(`audb shell ${command}`);
   }
 
   /**
    * Get device logs with optional filters
    * @param options - Log filtering options
+   * @param options.lines - Maximum number of log lines to retrieve
+   * @param options.priority - Filter by log priority level
+   * @param options.unit - Filter by systemd unit
+   * @param options.grep - Filter by grep pattern
+   * @param options.since - Show logs since timestamp
    * @returns Log output
    */
-  async getLogs(options: {
-    lines?: number;
-    priority?: string;
-    unit?: string;
-    grep?: string;
-    since?: string;
-  } = {}): Promise<string> {
+  async getLogs(options: LogOptions = {}): Promise<string> {
     let cmd = "audb logs";
     if (options.lines) cmd += ` -n ${options.lines}`;
     if (options.priority) cmd += ` --priority ${options.priority}`;
