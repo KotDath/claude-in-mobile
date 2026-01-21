@@ -3,8 +3,9 @@ import { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
 import { compressScreenshot, type CompressOptions } from "./utils/image.js";
 import type { LaunchOptions } from "./desktop/types.js";
+import { auroraClient as aurora } from "./aurora/index.js";
 
-export type Platform = "android" | "ios" | "desktop";
+export type Platform = "android" | "ios" | "desktop" | "aurora";
 
 export interface Device {
   id: string;
@@ -18,6 +19,7 @@ export class DeviceManager {
   private androidClient: AdbClient;
   private iosClient: IosClient;
   private desktopClient: DesktopClient;
+  private aurora = aurora;
   private activeDevice?: Device;
   private activeTarget: Platform = "android";
 
@@ -25,6 +27,18 @@ export class DeviceManager {
     this.androidClient = new AdbClient();
     this.iosClient = new IosClient();
     this.desktopClient = new DesktopClient();
+  }
+
+  private getClient(platform?: Platform) {
+    const p = platform ?? this.getCurrentPlatform();
+    switch (p) {
+      case "android": return this.androidClient;
+      case "ios": return this.iosClient;
+      case "desktop": return this.desktopClient;
+      case "aurora": return this.aurora;
+      default:
+        throw new Error(`Unknown platform: ${p}`);
+    }
   }
 
   // ============ Target Management ============
@@ -91,9 +105,9 @@ export class DeviceManager {
   // ============ Device Management ============
 
   /**
-   * Get all connected devices (Android + iOS)
+   * Get all connected devices (Android + iOS + Aurora)
    */
-  getAllDevices(): Device[] {
+  async getAllDevices(): Promise<Device[]> {
     const devices: Device[] = [];
 
     // Get Android devices
@@ -140,14 +154,42 @@ export class DeviceManager {
       });
     }
 
+    // Add desktop as virtual device if running
+    if (this.desktopClient.isRunning()) {
+      const state = this.desktopClient.getState();
+      devices.push({
+        id: "desktop",
+        name: "Desktop App",
+        platform: "desktop",
+        state: state.status,
+        isSimulator: false
+      });
+    }
+
+    // Get Aurora devices
+    try {
+      const auroraDevices = await this.aurora.listDevices();
+      for (const d of auroraDevices) {
+        devices.push({
+          id: d.id,
+          name: d.name,
+          platform: "aurora",
+          state: d.state,
+          isSimulator: d.isSimulator
+        });
+      }
+    } catch {
+      // audb not available or no devices
+    }
+
     return devices;
   }
 
   /**
    * Get devices filtered by platform
    */
-  getDevices(platform?: Platform): Device[] {
-    const all = this.getAllDevices();
+  async getDevices(platform?: Platform): Promise<Device[]> {
+    const all = await this.getAllDevices();
     if (!platform) return all;
     return all.filter(d => d.platform === platform);
   }
@@ -155,7 +197,7 @@ export class DeviceManager {
   /**
    * Set active device
    */
-  setDevice(deviceId: string, platform?: Platform): Device {
+  async setDevice(deviceId: string, platform?: Platform): Promise<Device> {
     // Handle desktop special case
     if (deviceId === "desktop" || platform === "desktop") {
       if (!this.desktopClient.isRunning()) {
@@ -171,14 +213,14 @@ export class DeviceManager {
       };
     }
 
-    const devices = this.getAllDevices();
+    const devices = await this.getAllDevices();
 
     // Find device by ID
     let device = devices.find(d => d.id === deviceId);
 
     // If platform specified but device not found, try to match
     if (!device && platform) {
-      device = devices.find(d => d.platform === platform && d.state === "device" || d.state === "booted");
+      device = devices.find(d => d.platform === platform && (d.state === "device" || d.state === "booted" || d.state === "connected"));
     }
 
     if (!device) {
@@ -194,6 +236,7 @@ export class DeviceManager {
     } else if (device.platform === "ios") {
       this.iosClient.setDevice(device.id);
     }
+    // Aurora and Desktop don't need explicit device selection
 
     return device;
   }
@@ -215,39 +258,6 @@ export class DeviceManager {
   }
 
   /**
-   * Get the appropriate client for current device or specified platform
-   */
-  private getClient(platform?: Platform): AdbClient | IosClient | DesktopClient {
-    const targetPlatform = platform ?? this.activeTarget;
-
-    if (targetPlatform === "desktop") {
-      if (!this.desktopClient.isRunning()) {
-        throw new Error("Desktop app is not running. Use launch_desktop_app first.");
-      }
-      return this.desktopClient;
-    }
-
-    if (!targetPlatform || targetPlatform === "android" || targetPlatform === "ios") {
-      const mobilePlatform = targetPlatform ?? this.activeDevice?.platform;
-
-      if (!mobilePlatform) {
-        // Try to auto-detect: prefer Android if available
-        const devices = this.getAllDevices().filter(d => d.platform !== "desktop");
-        const booted = devices.find(d => d.state === "device" || d.state === "booted");
-        if (booted) {
-          this.setDevice(booted.id);
-          return booted.platform === "android" ? this.androidClient : this.iosClient;
-        }
-        throw new Error("No active device. Use set_device or list_devices first.");
-      }
-
-      return mobilePlatform === "android" ? this.androidClient : this.iosClient;
-    }
-
-    throw new Error(`Unknown platform: ${targetPlatform}`);
-  }
-
-  /**
    * Get current platform
    */
   getCurrentPlatform(): Platform {
@@ -261,25 +271,35 @@ export class DeviceManager {
    */
   async screenshot(
     platform?: Platform,
-    compress: boolean = true,
-    options?: CompressOptions & { monitorIndex?: number }
+    compress = true,
+    options?: { maxWidth?: number; maxHeight?: number; quality?: number; monitorIndex?: number }
   ): Promise<{ data: string; mimeType: string }> {
-    const client = this.getClient(platform);
+    const p = platform ?? this.getCurrentPlatform();
+    const client = this.getClient(p);
 
+    // Handle DesktopClient specially
     if (client instanceof DesktopClient) {
       const result = await client.screenshotWithMeta({
         monitorIndex: options?.monitorIndex
       });
-      // Desktop returns JPEG already compressed
       return { data: result.base64, mimeType: result.mimeType };
     }
 
-    // Mobile clients
-    const buffer = (client as AdbClient | IosClient).screenshotRaw();
-    if (compress) {
-      return compressScreenshot(buffer, options);
+    // Handle AuroraClient
+    if ("screenshot" in client && typeof client.screenshot === "function" && !("screenshotRaw" in client)) {
+      return await (client as any).screenshot({ compress, ...options });
     }
-    return { data: buffer.toString("base64"), mimeType: "image/png" };
+
+    // Handle Android and iOS clients
+    if ("screenshotRaw" in client && typeof client.screenshotRaw === "function") {
+      const buffer = (client as AdbClient | IosClient).screenshotRaw();
+      if (compress) {
+        return compressScreenshot(buffer, options);
+      }
+      return { data: buffer.toString("base64"), mimeType: "image/png" };
+    }
+
+    throw new Error(`Screenshot not supported for platform: ${p}`);
   }
 
   /**

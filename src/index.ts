@@ -620,7 +620,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 
   switch (name) {
     case "list_devices": {
-      const devices = deviceManager.getDevices(platform);
+      const devices = await deviceManager.getDevices(platform);
       if (devices.length === 0) {
         return { text: "No devices connected. Make sure ADB/Xcode is running and a device/emulator/simulator is connected." };
       }
@@ -632,6 +632,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       const android = devices.filter(d => d.platform === "android");
       const ios = devices.filter(d => d.platform === "ios");
       const desktop = devices.filter(d => d.platform === "desktop");
+      const aurora = devices.filter(d => d.platform === "aurora");
 
       let result = "Connected devices:\n";
 
@@ -661,11 +662,19 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
         }
       }
 
+      if (aurora.length > 0) {
+        result += "\nAurora:\n";
+        for (const d of aurora) {
+          const active = activeDevice?.id === d.id && activeTarget === "aurora" ? " [ACTIVE]" : "";
+          result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
+        }
+      }
+
       return { text: result.trim() };
     }
 
     case "set_device": {
-      const device = deviceManager.setDevice(args.deviceId as string, platform);
+      const device = await deviceManager.setDevice(args.deviceId as string, platform);
       return { text: `Device set to: ${device.name} (${device.platform}, ${device.id})` };
     }
 
