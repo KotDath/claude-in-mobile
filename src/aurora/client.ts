@@ -152,7 +152,7 @@ export class AuroraClient {
 
   /**
    * Launch an application on the Aurora device
-   * @param package - Application name (D-Bus format: ru.domain.AppName)
+   * @param packageName - Application name (D-Bus format: ru.domain.AppName)
    * @returns Output message from audb
    */
   async launchApp(packageName: string): Promise<string> {
@@ -162,7 +162,8 @@ export class AuroraClient {
 
   /**
    * Stop a running application
-   * @param package - Application name (D-Bus format: ru.domain.AppName)
+   * @param packageName - Application name (D-Bus format: ru.domain.AppName)
+   * @returns Promise that resolves when the app is stopped
    */
   async stopApp(packageName: string): Promise<void> {
     await this.runCommand(`audb stop ${packageName}`);
@@ -180,7 +181,7 @@ export class AuroraClient {
 
   /**
    * Uninstall a package from the Aurora device
-   * @param package - Package name (e.g., ru.domain.AppName)
+   * @param packageName - Package name (e.g., ru.domain.AppName)
    * @returns Uninstallation result message
    */
   async uninstallApp(packageName: string): Promise<string> {
