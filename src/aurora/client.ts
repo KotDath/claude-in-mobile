@@ -37,11 +37,14 @@ export class AuroraClient {
         );
       }
       return stdout.trim();
-    } catch (error: any) {
-      if (error.message.includes("audb: command not found")) {
-        throw new Error("audb not found. Install: cargo install audb-client");
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        if (error.message.includes("audb: command not found")) {
+          throw new Error("audb not found. Install: cargo install audb-client");
+        }
+        throw new Error(`Command '${command}' failed: ${error.message}`);
       }
-      throw new Error(`audb failed: ${error.message}`);
+      throw new Error(`Command '${command}' failed with unknown error`);
     }
   }
 
@@ -68,22 +71,48 @@ export class AuroraClient {
     }
   }
 
+  /**
+   * Performs a tap at the specified coordinates.
+   * @param x - X coordinate in pixels
+   * @param y - Y coordinate in pixels
+   */
   async tap(x: number, y: number): Promise<void> {
     await this.runCommand(`audb tap ${x} ${y}`);
   }
 
+  /**
+   * Performs a long press at the specified coordinates.
+   * @param x - X coordinate in pixels
+   * @param y - Y coordinate in pixels
+   * @param duration - Duration of the press in milliseconds
+   */
   async longPress(x: number, y: number, duration: number): Promise<void> {
     await this.runCommand(`audb tap ${x} ${y} --duration ${duration}`);
   }
 
+  /**
+   * Performs a swipe in the specified direction.
+   * @param direction - Direction to swipe: "up", "down", "left", or "right"
+   */
   async swipeDirection(direction: "up"|"down"|"left"|"right"): Promise<void> {
     await this.runCommand(`audb swipe ${direction}`);
   }
 
+  /**
+   * Performs a swipe from one coordinate to another.
+   * @param x1 - Starting X coordinate in pixels
+   * @param y1 - Starting Y coordinate in pixels
+   * @param x2 - Ending X coordinate in pixels
+   * @param y2 - Ending Y coordinate in pixels
+   */
   async swipeCoords(x1: number, y1: number, x2: number, y2: number): Promise<void> {
     await this.runCommand(`audb swipe ${x1} ${y1} ${x2} ${y2}`);
   }
 
+  /**
+   * Sends a keyboard key event to the device.
+   * @param key - Key name to send (e.g., "Enter", "Back", "Home")
+   */
   async pressKey(key: string): Promise<void> {
     await this.runCommand(`audb key ${key}`);
   }
