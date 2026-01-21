@@ -76,18 +76,24 @@ export class AuroraClient {
       const output = await this.runCommand("audb device list");
       const devices: Device[] = [];
 
-      // Parse audb output format:
-      // • 192.168.2.15 - My Device (aurora-arm64, connected)
-      const lines = output.split("\n");
+      // Strip ANSI escape codes
+      const cleanOutput = output.replace(/\x1b\[[0-9;]*m/g, '');
+
+      const lines = cleanOutput.split("\n");
       for (const line of lines) {
-        const match = line.match(/•\s+([\d.]+)\s+-\s+(.+?)\s+\((.+?),\s+(\w+)\)/);
+        // Skip headers, separators, and empty lines
+        if (!line.trim() || line.includes("---") || line.includes("Index")) continue;
+
+        // Parse format: "0     R570                 192.168.2.13       22     aurora-arm connected(3609s) *"
+        const match = line.match(/^\s*\d+\s+(\S+)\s+([\d.]+)\s+\d+\s+(?:\S+)\s+(.+?)\s*(?:\*)?$/);
         if (match) {
-          const [, host, name, , state] = match;
+          const [, name, host, status] = match;
+          const isConnected = status.includes("connected");
           devices.push({
             id: host,
             name: name.trim(),
             platform: "aurora",
-            state: state === "connected" ? "connected" : "disconnected",
+            state: isConnected ? "connected" : "disconnected",
             isSimulator: false,
             host,
           });
@@ -95,7 +101,7 @@ export class AuroraClient {
       }
 
       return devices;
-    } catch (error) {
+    } catch (error: unknown) {
       // Return empty array on error (e.g., audb not installed)
       return [];
     }
