@@ -609,6 +609,33 @@ const tools: Tool[] = [
       required: ["text", "pid"],
     },
   },
+  // ============ Aurora Tools ============
+  {
+    name: "push_file",
+    description: "Upload file to Aurora OS device",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: { ...platformParam, const: "aurora" },
+        localPath: { type: "string", description: "Local file path" },
+        remotePath: { type: "string", description: "Remote destination path" },
+      },
+      required: ["localPath", "remotePath"],
+    },
+  },
+  {
+    name: "pull_file",
+    description: "Download file from Aurora OS device",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: { const: "aurora" },
+        remotePath: { type: "string", description: "Path to the remote file" },
+        localPath: { type: "string", description: "Optional local path" },
+      },
+      required: ["remotePath"],
+    },
+  },
 ];
 
 // Cache for UI elements (to support tap by index)
@@ -1126,6 +1153,24 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       }
     }
 
+    // ============ Aurora Tools ============
+
+    case "push_file": {
+      const result = await deviceManager.getAurora().pushFile(
+        args.localPath as string,
+        args.remotePath as string
+      );
+      return { text: result };
+    }
+
+    case "pull_file": {
+      const buffer = await deviceManager.getAurora().pullFile(
+        args.remotePath as string,
+        args.localPath as string | undefined
+      );
+      return { text: `Downloaded ${args.remotePath} (${buffer.length} bytes)` };
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -1135,7 +1180,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "2.7.0",
+    version: "2.8.0",
   },
   {
     capabilities: {
@@ -1200,7 +1245,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Claude Mobile MCP server running (Android + iOS + Desktop)");
+  console.error("Claude Mobile MCP server running (Android + iOS + Desktop + Aurora)");
 }
 
 main().catch((error) => {

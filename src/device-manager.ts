@@ -465,6 +465,13 @@ export class DeviceManager {
   }
 
   /**
+   * Get Aurora client directly
+   */
+  getAurora() {
+    return this.aurora;
+  }
+
+  /**
    * Get device logs
    */
   getLogs(options: {
