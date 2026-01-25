@@ -1,16 +1,14 @@
-export interface ImageResult {
-    data: string;
-    mimeType: string;
-}
 export interface CompressOptions {
     maxWidth?: number;
     maxHeight?: number;
     quality?: number;
+    maxSizeBytes?: number;
 }
 /**
  * Compress PNG image buffer
  * - Resize if larger than max dimensions
  * - Convert to JPEG with specified quality
+ * - Iteratively reduce quality if still too large
  * Returns base64 encoded JPEG
  */
 export declare function compressScreenshot(pngBuffer: Buffer, options?: CompressOptions): Promise<{
