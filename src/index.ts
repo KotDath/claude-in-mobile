@@ -712,7 +712,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "set_device": {
-      const device = await deviceManager.setDevice(args.deviceId as string, platform);
+      const device = deviceManager.setDevice(args.deviceId as string, platform);
       return { text: `Device set to: ${device.name} (${device.platform}, ${device.id})` };
     }
 
