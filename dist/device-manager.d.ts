@@ -139,7 +139,7 @@ export declare class DeviceManager {
     /**
      * Get Aurora client directly
      */
-    getAurora(): AuroraClient;
+    getAuroraClient(): AuroraClient;
     /**
      * Get device logs
      */

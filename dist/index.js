@@ -839,7 +839,7 @@ async function handleTool(name, args) {
             if (platform !== "aurora") {
                 return { text: "list_apps is only available for Aurora OS." };
             }
-            const packages = deviceManager.getAurora().listPackages();
+            const packages = deviceManager.getAuroraClient().listPackages();
             return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
         }
         case "get_current_activity": {
@@ -1058,11 +1058,11 @@ async function handleTool(name, args) {
         }
         // ============ Aurora Tools ============
         case "push_file": {
-            const result = await deviceManager.getAurora().pushFile(args.localPath, args.remotePath);
+            const result = await deviceManager.getAuroraClient().pushFile(args.localPath, args.remotePath);
             return { text: result };
         }
         case "pull_file": {
-            const buffer = await deviceManager.getAurora().pullFile(args.remotePath, args.localPath);
+            const buffer = await deviceManager.getAuroraClient().pullFile(args.remotePath, args.localPath);
             return { text: `Downloaded ${args.remotePath} (${buffer.length} bytes)` };
         }
         default:

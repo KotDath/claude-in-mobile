@@ -910,7 +910,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       if (platform !== "aurora") {
         return { text: "list_apps is only available for Aurora OS." };
       }
-      const packages = deviceManager.getAurora().listPackages();
+      const packages = deviceManager.getAuroraClient().listPackages();
       return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
     }
 
@@ -1175,7 +1175,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     // ============ Aurora Tools ============
 
     case "push_file": {
-      const result = await deviceManager.getAurora().pushFile(
+      const result = await deviceManager.getAuroraClient().pushFile(
         args.localPath as string,
         args.remotePath as string
       );
@@ -1183,7 +1183,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "pull_file": {
-      const buffer = await deviceManager.getAurora().pullFile(
+      const buffer = await deviceManager.getAuroraClient().pullFile(
         args.remotePath as string,
         args.localPath as string | undefined
       );

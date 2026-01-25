@@ -333,15 +333,12 @@ export class DeviceManager {
     const client = this.getClient(platform);
     if (client instanceof DesktopClient) {
       await client.longPress(x, y, durationMs);
-    } else if (client instanceof AdbClient) {
-      client.longPress(x, y, durationMs);
+    } else if (client instanceof IosClient) {
+      // iOS: simulate with longer tap
+      client.tap(x, y);
     } else {
-      // iOS and Aurora: simulate with longer tap (iOS) or use longPress (Aurora)
-      if (client instanceof IosClient) {
-        client.tap(x, y);
-      } else {
-        (client as AuroraClient).longPress(x, y, durationMs);
-      }
+      // Android and Aurora: use longPress
+      (client as AdbClient | AuroraClient).longPress(x, y, durationMs);
     }
   }
 
@@ -474,7 +471,7 @@ export class DeviceManager {
   /**
    * Get Aurora client directly
    */
-  getAurora() {
+  getAuroraClient() {
     return this.aurora;
   }
 
