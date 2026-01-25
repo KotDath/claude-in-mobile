@@ -824,22 +824,22 @@ async function handleTool(name, args) {
             return { text: `Found ${found.length} element(s):\n${list}${found.length > 20 ? "\n..." : ""}` };
         }
         case "launch_app": {
-            const result = await deviceManager.launchApp(args.package, platform);
+            const result = deviceManager.launchApp(args.package, platform);
             return { text: result };
         }
         case "stop_app": {
-            await deviceManager.stopApp(args.package, platform);
+            deviceManager.stopApp(args.package, platform);
             return { text: `Stopped: ${args.package}` };
         }
         case "install_app": {
-            const result = await deviceManager.installApp(args.path, platform);
+            const result = deviceManager.installApp(args.path, platform);
             return { text: result };
         }
         case "list_apps": {
             if (platform !== "aurora") {
                 return { text: "list_apps is only available for Aurora OS." };
             }
-            const packages = await deviceManager.getAurora().listPackages();
+            const packages = deviceManager.getAurora().listPackages();
             return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
         }
         case "get_current_activity": {
@@ -851,7 +851,7 @@ async function handleTool(name, args) {
             return { text: `Current activity: ${activity}` };
         }
         case "shell": {
-            const output = await deviceManager.shell(args.command, platform);
+            const output = deviceManager.shell(args.command, platform);
             return { text: output || "(no output)" };
         }
         case "wait": {
@@ -870,7 +870,7 @@ async function handleTool(name, args) {
             return { text: `Opened URL: ${args.url}` };
         }
         case "get_logs": {
-            const logs = await deviceManager.getLogs({
+            const logs = deviceManager.getLogs({
                 platform,
                 level: args.level,
                 tag: args.tag,
@@ -880,11 +880,11 @@ async function handleTool(name, args) {
             return { text: logs || "(no logs)" };
         }
         case "clear_logs": {
-            const result = await deviceManager.clearLogs(platform);
+            const result = deviceManager.clearLogs(platform);
             return { text: result };
         }
         case "get_system_info": {
-            const info = await deviceManager.getSystemInfo(platform);
+            const info = deviceManager.getSystemInfo(platform);
             return { text: info };
         }
         // ============ Desktop Tools ============

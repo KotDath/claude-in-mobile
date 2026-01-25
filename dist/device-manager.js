@@ -16,15 +16,38 @@ export class DeviceManager {
         this.desktopClient = new DesktopClient();
     }
     getClient(platform) {
-        const p = platform ?? this.getCurrentPlatform();
-        switch (p) {
-            case "android": return this.androidClient;
-            case "ios": return this.iosClient;
-            case "desktop": return this.desktopClient;
-            case "aurora": return this.aurora;
-            default:
-                throw new Error(`Unknown platform: ${p}`);
+        const targetPlatform = platform ?? this.activeTarget;
+        if (targetPlatform === "desktop") {
+            if (!this.desktopClient.isRunning()) {
+                throw new Error("Desktop app is not running. Use launch_desktop_app first.");
+            }
+            return this.desktopClient;
         }
+        if (!targetPlatform || targetPlatform === "android" || targetPlatform === "ios" || targetPlatform === "aurora") {
+            const mobilePlatform = targetPlatform ?? this.activeDevice?.platform;
+            if (!mobilePlatform) {
+                // Try to auto-detect: prefer Android if available
+                const devices = this.getAllDevices().filter(d => d.platform !== "desktop");
+                const booted = devices.find(d => d.state === "device" || d.state === "booted" || d.state === "connected");
+                if (booted) {
+                    this.setDevice(booted.id);
+                    if (booted.platform === "android")
+                        return this.androidClient;
+                    if (booted.platform === "ios")
+                        return this.iosClient;
+                    if (booted.platform === "aurora")
+                        return this.aurora;
+                }
+                throw new Error("No active device. Use set_device or list_devices first.");
+            }
+            if (mobilePlatform === "android")
+                return this.androidClient;
+            if (mobilePlatform === "ios")
+                return this.iosClient;
+            if (mobilePlatform === "aurora")
+                return this.aurora;
+        }
+        throw new Error(`Unknown platform: ${targetPlatform}`);
     }
     // ============ Target Management ============
     /**
@@ -219,47 +242,30 @@ export class DeviceManager {
      * Take screenshot with optional compression
      */
     async screenshot(platform, compress = true, options) {
-        const p = platform ?? this.getCurrentPlatform();
-        const client = this.getClient(p);
-        // Handle DesktopClient specially
+        const client = this.getClient(platform);
         if (client instanceof DesktopClient) {
             const result = await client.screenshotWithMeta({
                 monitorIndex: options?.monitorIndex
             });
+            // Desktop returns JPEG already compressed
             return { data: result.base64, mimeType: result.mimeType };
         }
-        // Handle Android, iOS, Aurora clients (all have screenshotRaw)
-        if (this.isMobileClientWithScreenshot(client)) {
-            const buffer = client.screenshotRaw();
-            if (compress) {
-                return compressScreenshot(buffer, options);
-            }
-            return { data: buffer.toString("base64"), mimeType: "image/png" };
+        // Mobile clients
+        const buffer = client.screenshotRaw();
+        if (compress) {
+            return compressScreenshot(buffer, options);
         }
-        throw new Error(`Screenshot not supported for platform: ${p}`);
-    }
-    /**
-     * Type guard for mobile clients with screenshotRaw support
-     */
-    isMobileClientWithScreenshot(client) {
-        return (client instanceof AdbClient ||
-            client instanceof IosClient ||
-            client instanceof AuroraClient);
+        return { data: buffer.toString("base64"), mimeType: "image/png" };
     }
     /**
      * Take screenshot without compression (legacy)
      */
     screenshotRaw(platform) {
         const client = this.getClient(platform);
-        // Desktop doesn't support screenshotRaw (different architecture)
         if (client instanceof DesktopClient) {
             throw new Error("Use screenshot() for desktop platform");
         }
-        // All mobile platforms (Android, iOS, Aurora) support screenshotRaw
-        if (this.isMobileClientWithScreenshot(client)) {
-            return client.screenshotRaw().toString("base64");
-        }
-        throw new Error(`Screenshot not supported for platform: ${platform ?? this.getCurrentPlatform()}`);
+        return client.screenshot();
     }
     /**
      * Tap at coordinates
@@ -348,7 +354,7 @@ export class DeviceManager {
     /**
      * Launch app
      */
-    async launchApp(packageOrBundleId, platform) {
+    launchApp(packageOrBundleId, platform) {
         const client = this.getClient(platform);
         if (client instanceof DesktopClient) {
             return client.launchApp(packageOrBundleId);
@@ -358,7 +364,7 @@ export class DeviceManager {
     /**
      * Stop app
      */
-    async stopApp(packageOrBundleId, platform) {
+    stopApp(packageOrBundleId, platform) {
         const client = this.getClient(platform);
         if (client instanceof DesktopClient) {
             client.stopApp(packageOrBundleId);
@@ -370,7 +376,7 @@ export class DeviceManager {
     /**
      * Install app
      */
-    async installApp(path, platform) {
+    installApp(path, platform) {
         const client = this.getClient(platform);
         if (client instanceof DesktopClient) {
             return "Desktop platform doesn't support app installation";
@@ -397,7 +403,7 @@ export class DeviceManager {
     /**
      * Execute shell command
      */
-    async shell(command, platform) {
+    shell(command, platform) {
         const client = this.getClient(platform);
         if (client instanceof DesktopClient) {
             return client.shell(command);
@@ -425,7 +431,7 @@ export class DeviceManager {
     /**
      * Get device logs
      */
-    async getLogs(options = {}) {
+    getLogs(options = {}) {
         const targetPlatform = options.platform ?? this.activeTarget;
         if (targetPlatform === "desktop") {
             const logs = this.desktopClient.getLogs({
@@ -456,7 +462,7 @@ export class DeviceManager {
     /**
      * Clear logs
      */
-    async clearLogs(platform) {
+    clearLogs(platform) {
         const targetPlatform = platform ?? this.activeTarget;
         if (targetPlatform === "desktop") {
             this.desktopClient.clearLogs();
@@ -474,11 +480,11 @@ export class DeviceManager {
     /**
      * Get system info (battery, memory, etc.)
      */
-    async getSystemInfo(platform) {
+    getSystemInfo(platform) {
         const targetPlatform = platform ?? this.activeTarget;
         if (targetPlatform === "desktop") {
-            const metrics = await this.desktopClient.getPerformanceMetrics();
-            return `=== Desktop Performance ===\nMemory: ${metrics.memoryUsageMb} MB${metrics.cpuPercent ? `\nCPU: ${metrics.cpuPercent}%` : ''}`;
+            // Desktop requires async - this is a limitation
+            throw new Error("getSystemInfo for desktop must be called with await. Use the async variant if needed.");
         }
         const client = this.getClient(platform);
         if (client instanceof AdbClient) {

@@ -1,13 +1,3 @@
-export interface ScreenshotOptions {
-    compress?: boolean;
-    maxWidth?: number;
-    maxHeight?: number;
-    quality?: number;
-}
-export interface ScreenshotResult {
-    data: string;
-    mimeType: string;
-}
 export interface Device {
     id: string;
     name: string;
@@ -98,10 +88,9 @@ export declare class AuroraClient {
     screenshotRaw(): Buffer;
     /**
      * Takes a screenshot of the Aurora device
-     * @param options - Screenshot options (compression, size, quality)
-     * @returns Screenshot result with base64 data and MIME type
+     * @returns Base64 encoded PNG screenshot
      */
-    screenshot(options?: ScreenshotOptions): Promise<ScreenshotResult>;
+    screenshot(): string;
     /**
      * Launch an application on the Aurora device
      * @param packageName - Application name (D-Bus format: ru.domain.AppName)

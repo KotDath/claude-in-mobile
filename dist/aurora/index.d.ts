@@ -1,2 +1,2 @@
-export { AuroraClient, auroraClient, Device, ScreenshotOptions, ScreenshotResult, LogOptions } from "./client.js";
+export { AuroraClient, auroraClient, Device, LogOptions } from "./client.js";
 //# sourceMappingURL=index.d.ts.map

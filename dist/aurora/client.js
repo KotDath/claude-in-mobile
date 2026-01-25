@@ -2,7 +2,6 @@ import { execSync } from "child_process";
 import { readFileSync, unlinkSync } from "fs";
 import { randomBytes } from "crypto";
 import { tmpdir } from "os";
-import { compressScreenshot } from "../utils/image.js";
 export class AuroraClient {
     escapeShellArg(arg) {
         return arg
@@ -196,22 +195,10 @@ export class AuroraClient {
     }
     /**
      * Takes a screenshot of the Aurora device
-     * @param options - Screenshot options (compression, size, quality)
-     * @returns Screenshot result with base64 data and MIME type
+     * @returns Base64 encoded PNG screenshot
      */
-    async screenshot(options = {}) {
-        const buffer = this.screenshotRaw();
-        if (options.compress !== false) {
-            return compressScreenshot(buffer, {
-                maxWidth: options.maxWidth,
-                maxHeight: options.maxHeight,
-                quality: options.quality,
-            });
-        }
-        return {
-            data: buffer.toString("base64"),
-            mimeType: "image/png",
-        };
+    screenshot() {
+        return this.screenshotRaw().toString("base64");
     }
     /**
      * Launch an application on the Aurora device

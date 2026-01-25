@@ -892,17 +892,17 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "launch_app": {
-      const result = await deviceManager.launchApp(args.package as string, platform);
+      const result = deviceManager.launchApp(args.package as string, platform);
       return { text: result };
     }
 
     case "stop_app": {
-      await deviceManager.stopApp(args.package as string, platform);
+      deviceManager.stopApp(args.package as string, platform);
       return { text: `Stopped: ${args.package}` };
     }
 
     case "install_app": {
-      const result = await deviceManager.installApp(args.path as string, platform);
+      const result = deviceManager.installApp(args.path as string, platform);
       return { text: result };
     }
 
@@ -910,7 +910,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       if (platform !== "aurora") {
         return { text: "list_apps is only available for Aurora OS." };
       }
-      const packages = await deviceManager.getAurora().listPackages();
+      const packages = deviceManager.getAurora().listPackages();
       return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
     }
 
@@ -926,7 +926,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "shell": {
-      const output = await deviceManager.shell(args.command as string, platform);
+      const output = deviceManager.shell(args.command as string, platform);
       return { text: output || "(no output)" };
     }
 
@@ -948,7 +948,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "get_logs": {
-      const logs = await deviceManager.getLogs({
+      const logs = deviceManager.getLogs({
         platform,
         level: args.level as string | undefined,
         tag: args.tag as string | undefined,
@@ -959,12 +959,12 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "clear_logs": {
-      const result = await deviceManager.clearLogs(platform);
+      const result = deviceManager.clearLogs(platform);
       return { text: result };
     }
 
     case "get_system_info": {
-      const info = await deviceManager.getSystemInfo(platform);
+      const info = deviceManager.getSystemInfo(platform);
       return { text: info };
     }
 

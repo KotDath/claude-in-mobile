@@ -1,6 +1,7 @@
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
+import { type CompressOptions } from "./utils/image.js";
 import type { LaunchOptions } from "./desktop/types.js";
 import { AuroraClient } from "./aurora/index.js";
 export type Platform = "android" | "ios" | "desktop" | "aurora";
@@ -70,19 +71,12 @@ export declare class DeviceManager {
     /**
      * Take screenshot with optional compression
      */
-    screenshot(platform?: Platform, compress?: boolean, options?: {
-        maxWidth?: number;
-        maxHeight?: number;
-        quality?: number;
+    screenshot(platform?: Platform, compress?: boolean, options?: CompressOptions & {
         monitorIndex?: number;
     }): Promise<{
         data: string;
         mimeType: string;
     }>;
-    /**
-     * Type guard for mobile clients with screenshotRaw support
-     */
-    private isMobileClientWithScreenshot;
     /**
      * Take screenshot without compression (legacy)
      */
@@ -117,15 +111,15 @@ export declare class DeviceManager {
     /**
      * Launch app
      */
-    launchApp(packageOrBundleId: string, platform?: Platform): Promise<string>;
+    launchApp(packageOrBundleId: string, platform?: Platform): string;
     /**
      * Stop app
      */
-    stopApp(packageOrBundleId: string, platform?: Platform): Promise<void>;
+    stopApp(packageOrBundleId: string, platform?: Platform): void;
     /**
      * Install app
      */
-    installApp(path: string, platform?: Platform): Promise<string>;
+    installApp(path: string, platform?: Platform): string;
     /**
      * Get UI hierarchy
      */
@@ -133,7 +127,7 @@ export declare class DeviceManager {
     /**
      * Execute shell command
      */
-    shell(command: string, platform?: Platform): Promise<string>;
+    shell(command: string, platform?: Platform): string;
     /**
      * Get Android client directly
      */
@@ -155,14 +149,14 @@ export declare class DeviceManager {
         tag?: string;
         lines?: number;
         package?: string;
-    }): Promise<string>;
+    }): string;
     /**
      * Clear logs
      */
-    clearLogs(platform?: Platform): Promise<string>;
+    clearLogs(platform?: Platform): string;
     /**
      * Get system info (battery, memory, etc.)
      */
-    getSystemInfo(platform?: Platform): Promise<string>;
+    getSystemInfo(platform?: Platform): string;
 }
 //# sourceMappingURL=device-manager.d.ts.map

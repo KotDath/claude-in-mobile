@@ -2,19 +2,6 @@ import { execSync } from "child_process";
 import { readFileSync, unlinkSync } from "fs";
 import { randomBytes } from "crypto";
 import { tmpdir } from "os";
-import { compressScreenshot } from "../utils/image.js";
-
-export interface ScreenshotOptions {
-  compress?: boolean;
-  maxWidth?: number;
-  maxHeight?: number;
-  quality?: number;
-}
-
-export interface ScreenshotResult {
-  data: string;
-  mimeType: string;
-}
 
 export interface Device {
   id: string;
@@ -237,24 +224,10 @@ export class AuroraClient {
 
   /**
    * Takes a screenshot of the Aurora device
-   * @param options - Screenshot options (compression, size, quality)
-   * @returns Screenshot result with base64 data and MIME type
+   * @returns Base64 encoded PNG screenshot
    */
-  async screenshot(options: ScreenshotOptions = {}): Promise<ScreenshotResult> {
-    const buffer = this.screenshotRaw();
-
-    if (options.compress !== false) {
-      return compressScreenshot(buffer, {
-        maxWidth: options.maxWidth,
-        maxHeight: options.maxHeight,
-        quality: options.quality,
-      });
-    }
-
-    return {
-      data: buffer.toString("base64"),
-      mimeType: "image/png",
-    };
+  screenshot(): string {
+    return this.screenshotRaw().toString("base64");
   }
 
   /**
