@@ -316,6 +316,9 @@ export class DeviceManager {
         if (client instanceof DesktopClient) {
             await client.swipeDirection(direction);
         }
+        else if (client instanceof AuroraClient) {
+            await client.swipeDirection(direction);
+        }
         else {
             client.swipeDirection(direction);
         }
@@ -344,6 +347,10 @@ export class DeviceManager {
         const client = this.getClient(platform);
         if (client instanceof DesktopClient) {
             await client.pressKey(key, undefined, targetPid);
+        }
+        else if (client instanceof AuroraClient) {
+            // Aurora: not implemented - audb has 'key' command but not exposed via wrapper
+            throw new Error("pressKey is not supported for Aurora platform");
         }
         else {
             client.pressKey(key);
@@ -404,6 +411,10 @@ export class DeviceManager {
             const hierarchy = await client.getUiHierarchy();
             // Format as text for compatibility
             return formatDesktopHierarchy(hierarchy);
+        }
+        else if (client instanceof AuroraClient) {
+            // Aurora: UI hierarchy scraping not available via audb
+            return await client.getUiHierarchy();
         }
         return client.getUiHierarchy();
     }
