@@ -282,7 +282,7 @@ pub fn press_key(key: &str, device: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn shell_with_root(shell_command: &str, root: bool, device: Option<&str>) -> Result<String> {
+pub fn shell(shell_command: &str, root: bool, device: Option<&str>) -> Result<String> {
     let mut args = owned(&["shell"]);
     if root {
         args.push("--root".into());

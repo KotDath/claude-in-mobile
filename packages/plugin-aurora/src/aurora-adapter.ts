@@ -40,12 +40,28 @@ export class AuroraAdapter
 
   /** Raw client access -- needed by tools that call getAuroraClient(). */
   getClient(deviceId?: string): AuroraClient {
+    return this.clientFor(deviceId);
+  }
+
+  /** Return a client targeting deviceId without mutating the selected target. */
+  private clientFor(deviceId?: string): AuroraClient {
     return deviceId ? this.client.forDevice(deviceId) : this.client;
   }
 
-  listDevices(): Device[] { return this.client.listDevices(); }
-  selectDevice(deviceId: string): void { this.client.selectDevice(deviceId); }
-  getSelectedDeviceId(): string | undefined { return this.client.getSelectedDeviceId(); }
+  // ============ Device management ============
+
+  listDevices(): Device[] {
+    return this.client.listDevices();
+  }
+
+  selectDevice(deviceId: string): void {
+    this.client.selectDevice(deviceId);
+  }
+
+  getSelectedDeviceId(): string | undefined {
+    return this.client.getSelectedDeviceId();
+  }
+
   autoDetectDevice(): Device | undefined {
     const devices = this.listDevices();
     try {
@@ -60,19 +76,19 @@ export class AuroraAdapter
   // ============ Core actions ============
 
   async tap(x: number, y: number, _targetPid?: number, deviceId?: string): Promise<void> {
-    this.getClient(deviceId).tap(x, y);
+    this.clientFor(deviceId).tap(x, y);
   }
 
   async doubleTap(x: number, y: number, intervalMs: number = 100, deviceId?: string): Promise<void> {
     // Aurora: two taps with interval
-    const client = this.getClient(deviceId).forDevice();
+    const client = this.clientFor(deviceId).forDevice();
     client.tap(x, y);
     await new Promise(resolve => setTimeout(resolve, intervalMs));
     client.tap(x, y);
   }
 
   async longPress(x: number, y: number, durationMs: number = 1000, deviceId?: string): Promise<void> {
-    this.getClient(deviceId).longPress(x, y, durationMs);
+    this.clientFor(deviceId).longPress(x, y, durationMs);
   }
 
   async swipe(
@@ -83,19 +99,19 @@ export class AuroraAdapter
     durationMs?: number,
     deviceId?: string,
   ): Promise<void> {
-    this.getClient(deviceId).swipe(x1, y1, x2, y2, durationMs);
+    this.clientFor(deviceId).swipe(x1, y1, x2, y2, durationMs);
   }
 
   async swipeDirection(direction: "up" | "down" | "left" | "right", deviceId?: string): Promise<void> {
-    this.getClient(deviceId).swipeDirection(direction);
+    this.clientFor(deviceId).swipeDirection(direction);
   }
 
   async inputText(text: string, _targetPid?: number, deviceId?: string): Promise<void> {
-    this.getClient(deviceId).inputText(text);
+    this.clientFor(deviceId).inputText(text);
   }
 
   async pressKey(key: string, _targetPid?: number, deviceId?: string): Promise<void> {
-    this.getClient(deviceId).pressKey(key);
+    this.clientFor(deviceId).pressKey(key);
   }
 
   // ============ Screenshot ============
@@ -105,7 +121,7 @@ export class AuroraAdapter
     options?: CompressOptions & { monitorIndex?: number },
     deviceId?: string,
   ): Promise<{ data: string; mimeType: string }> {
-    const buffer = this.getClient(deviceId).screenshotRaw();
+    const buffer = this.clientFor(deviceId).screenshotRaw();
     if (compress) {
       return compressScreenshot(buffer, options);
     }
@@ -113,7 +129,7 @@ export class AuroraAdapter
   }
 
   async getScreenshotBufferAsync(deviceId?: string): Promise<Buffer> {
-    return this.getClient(deviceId).screenshotRaw();
+    return this.clientFor(deviceId).screenshotRaw();
   }
 
   screenshotRaw(): string {
@@ -123,41 +139,41 @@ export class AuroraAdapter
   // ============ UI ============
 
   async getUiHierarchy(deviceId?: string): Promise<string> {
-    return this.getClient(deviceId).getUiHierarchy();
+    return this.clientFor(deviceId).getUiHierarchy();
   }
 
   // ============ App management (AppManagementAdapter) ============
 
   openUrl(url: string, deviceId?: string): string {
-    return this.getClient(deviceId).openUrl(url);
+    return this.clientFor(deviceId).openUrl(url);
   }
 
   launchApp(packageName: string, deviceId?: string): string {
-    return this.getClient(deviceId).launchApp(packageName);
+    return this.clientFor(deviceId).launchApp(packageName);
   }
 
   stopApp(packageName: string, deviceId?: string): void {
-    this.getClient(deviceId).stopApp(packageName);
+    this.clientFor(deviceId).stopApp(packageName);
   }
 
   installApp(path: string, deviceId?: string): string {
-    return this.getClient(deviceId).installApp(path);
+    return this.clientFor(deviceId).installApp(path);
   }
 
   // ============ App inventory (AppInventoryAdapter) ============
 
   listApps(deviceId?: string): string[] {
-    return this.getClient(deviceId).listPackages();
+    return this.clientFor(deviceId).listPackages();
   }
 
   uninstallApp(packageName: string, deviceId?: string): string {
-    return this.getClient(deviceId).uninstallApp(packageName);
+    return this.clientFor(deviceId).uninstallApp(packageName);
   }
 
   // ============ Shell / Logs (ShellAdapter) ============
 
   shell(command: string, deviceId?: string): string {
-    return this.getClient(deviceId).shell(command);
+    return this.clientFor(deviceId).shell(command);
   }
 
   getLogs(options: {
@@ -166,36 +182,38 @@ export class AuroraAdapter
     lines?: number;
     package?: string;
   } = {}, deviceId?: string): string {
-    return this.getClient(deviceId).getLogs(options);
+    return this.clientFor(deviceId).getLogs(options);
   }
 
   clearLogs(deviceId?: string): string {
-    return this.getClient(deviceId).clearLogs();
+    return this.clientFor(deviceId).clearLogs();
   }
 
   // ============ File transfer (FileTransferAdapter) ============
 
   pushFile(localPath: string, remotePath: string, deviceId?: string): string {
-    return this.getClient(deviceId).pushFile(localPath, remotePath);
+    return this.clientFor(deviceId).pushFile(localPath, remotePath);
   }
 
   pullFile(remotePath: string, localPath?: string, deviceId?: string): string {
-    return this.getClient(deviceId).pullFile(remotePath, localPath);
+    return this.clientFor(deviceId).pullFile(remotePath, localPath);
   }
 
+  // ============ Permissions (PermissionAdapter) ============
+
   grantPermission(id: string, permission: string, deviceId?: string): string {
-    return this.getClient(deviceId).grantPermission(id, permission);
+    return this.clientFor(deviceId).grantPermission(id, permission);
   }
   revokePermission(id: string, permission: string, deviceId?: string): string {
-    return this.getClient(deviceId).revokePermission(id, permission);
+    return this.clientFor(deviceId).revokePermission(id, permission);
   }
   resetPermissions(id: string, deviceId?: string): string {
-    return this.getClient(deviceId).resetPermissions(id);
+    return this.clientFor(deviceId).resetPermissions(id);
   }
 
   // ============ System info ============
 
   async getSystemInfo(deviceId?: string): Promise<string> {
-    return this.getClient(deviceId).getSystemInfo();
+    return this.clientFor(deviceId).getSystemInfo();
   }
 }

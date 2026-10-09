@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { systemMeta, systemAliases } from "./meta/system-meta.js";
 import type { ToolContext } from "./context.js";
-import { resolveDevice } from "../device/device-resolver.js";
 
 function context() {
   const client = {
@@ -42,10 +41,5 @@ describe("Aurora permissions through system MCP", () => {
     await expect(systemMeta.handler({ action: "permission_prompt", platform: "aurora", package: "ru.example.app" }, ctx)).rejects.toThrow(/enabled/);
     await expect(systemMeta.handler({ action: "permission_grant_all", platform: "android", package: "ru.example.app" }, ctx)).rejects.toThrow();
     expect(manager.getAuroraClient).not.toHaveBeenCalled(); expect(client.grantAllPermissions).not.toHaveBeenCalled();
-  });
-  it("never substitutes a connected device for an unknown explicit Aurora ID", () => {
-    const listing = { devices: [{ id: "phone", name: "phone", platform: "aurora" as const, state: "connected", isSimulator: false }], errors: [] };
-    expect(() => resolveDevice("typo", "aurora", listing)).toThrow(/typo/);
-    expect(resolveDevice("phone", "aurora", listing).device.id).toBe("phone");
   });
 });

@@ -146,7 +146,7 @@ pub fn shell(
         "android" => android::shell(command, device)?,
         "ios" => ios::shell(command, simulator)?,
         "harmony" => harmony::shell(command, device)?,
-        "aurora" => aurora::shell_with_root(command, root, device)?,
+        "aurora" => aurora::shell(command, root, device)?,
         _ => unreachable!(),
     };
     Ok(())
