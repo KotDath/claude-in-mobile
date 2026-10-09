@@ -1,4 +1,4 @@
-# Aurora phones and emulators (audb >= 0.3.0)
+# Aurora phones and emulators (audb ^0.3.0)
 
 Read this reference before controlling Aurora. The same commands work on registered
 physical devices and SDK emulators. UI tree, clipboard, sensors, perf and sandbox
@@ -31,13 +31,35 @@ mcp-devices-cli aurora --device phone doctor
 mcp-devices-cli aurora --device phone capabilities
 ```
 
-Root access follows audb's existing setup policy. The integration does not store
-root passwords or install the agent automatically. Flutter SDK is needed to build
+Root SSH is configured per device in audb; CLI and MCP use the same account and
+identity. If root SSH already works, register it with
+`audb device update phone --root-user root`. For one-time key provisioning,
+install the [audb source revision with setup-root](https://github.com/KotDath/audb/commit/cb9af47)
+and use `audb --device phone setup-root` in an interactive terminal. Published
+0.3.0 does not include this provisioning command. Setup verifies both accounts
+before changing the registry, preserves the persistent default, and needs no password on subsequent calls. `--check-only`
+only probes access. The integration does not store root passwords or install
+the agent automatically. Flutter SDK is needed to build
 Flutter apps, not to run these commands against an already prepared device.
 
 Use explicit `--device ID` on each CLI operation / `deviceId` with `platform:
 "aurora"` in MCP. MCP selection is local and does not change audb's persistent
 default. Unknown explicit IDs are errors, never replaced by another device.
+
+Root execution is explicit:
+
+```sh
+mcp-devices-cli shell --platform aurora --device phone --root --i-know-what-im-doing 'id -u'
+```
+
+```json
+{"action":"shell","platform":"aurora","deviceId":"phone","command":"id -u","root":true}
+```
+
+Omitting `root` uses the ordinary SSH account. Both interfaces reject root on
+other platforms. The existing CLI shell opt-in and MCP metacharacter validation
+still apply. Device SSH policy must allow public-key root login; provisioning
+does not change `sshd` policy.
 
 ## Visual input and files
 
@@ -97,7 +119,7 @@ Android/iOS. Aurora-only fields/actions reject other platforms.
 
 ## Errors and diagnostics
 
-The clients require public JSON `schemaVersion: 1`; both carry a concrete device
+The clients require a stable audb version matching `^0.3.0` (0.3.x) and public JSON `schemaVersion: 1`; both carry a concrete device
 ID on targeted calls. A nonzero audb exit preserves its error code and partial
 operation metadata. Lost replies/timeouts return `OUTCOME_UNKNOWN`; inspect
 status and the visible result before deciding whether to repeat an action.

@@ -2,7 +2,7 @@
 
 Согласованный минимальный объём: актуализировать `feat/aurora-audb-migration`
 на upstream 4.4.1 и подключить телефон/эмулятор через существующие CLI, skills
-и MCP интерфейсы. Версия audb — не ниже 0.3.0, публичный JSON schemaVersion 1.
+и MCP интерфейсы. Версия audb — ^0.3.0 (0.3.x), публичный JSON schemaVersion 1.
 История ветки сохраняется merge-коммитом; main и версии проекта не меняются.
 
 1. Обновить ветку на upstream `7ed83cc`, сохранить Android/iOS/HarmonyOS поведение
@@ -47,8 +47,20 @@ Prompt и grants проверены на обеих целях. После пр�
 fixture остановлен и удалён; бинарники и desktop entries отсутствуют. Default
 audb остался emulator. Локальные артефакты: cli/target/aurora-evidence (ignored).
 
-У телефона не настроен root SSH: privileged logs возвращают штатную
-CAPABILITY_UNAVAILABLE; shell обычного пользователя и permissions через агент
-работают. Проверки выполнены с опубликованным audb 0.3.0 в PATH процесса;
-глобальный /home/kotdath/.cargo/bin/audb остаётся 0.2.1 и требует обновления
-для использования новой интеграции без изменения PATH.
+После исправлений review: 1522 Vitest tests и 237 Rust tests из CI проходят.
+Версия внешнего audb API закреплена в package.json Aurora-плагина как ^0.3.0;
+TypeScript и Rust строго проверяют одинаковый диапазон стабильных версий.
+В CI добавлен aurora_cli. Уязвимые npm-зависимости обновлены отдельным изменением;
+lockfile пересобран без старого node_modules, сохранены 8 Linux sharp-веток.
+Чистый npm ci, production audit (0 vulnerabilities), runtime --help и Browser ESM
+import проходят. Это локальные результаты; GitHub CI проверяется после reopening.
+
+Root на телефоне настроен через явный setup-root в исходной сборке audb: отдельная
+SSH identity для этого устройства, одноразовый devel-su пароль, проверка UID 0
+и обычного пользователя перед сохранением registry. sshd policy не изменялась.
+CLI --root и MCP root:true выполняют root SSH; оба отклоняют root на других
+платформах. Настоящий MCP stdio и CLI подтвердили UID 0 на телефоне/эмуляторе,
+UID 100000 без root, рабочие скриншоты и неизменный audb default emulator.
+Повторный setup-root вернул changed=false без пароля. Сама команда setup-root
+ещё не входит в опубликованный audb 0.3.0; исходная ревизия указана в справке.
+Проверка интеграции выполнена с опубликованным audb 0.3.0 в PATH процесса.

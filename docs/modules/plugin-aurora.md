@@ -1,6 +1,6 @@
 # Platform Plugin: Aurora
 
-`@mcp-devices/plugin-aurora` connects MCP to audb >=0.3.0. Native
+`@mcp-devices/plugin-aurora` connects MCP to audb ^0.3.0. Native
 `mcp-devices-cli` uses the same public JSON CLI contract. Registered physical
 phones/tablets and SDK emulators share device IDs and commands.
 
