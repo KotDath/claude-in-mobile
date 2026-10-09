@@ -34,11 +34,17 @@ mcp-devices-cli aurora --device phone capabilities
 Root SSH is configured per device in audb; CLI and MCP use the same account and
 identity. If root SSH already works, register it with
 `audb device update phone --root-user root`. For one-time key provisioning,
-install the [audb source revision with setup-root](https://github.com/KotDath/audb/commit/cb9af47)
+install the [audb source revision with setup-root](https://github.com/KotDath/audb/commit/0cb1339)
 and use `audb --device phone setup-root` in an interactive terminal. Published
 0.3.0 does not include this provisioning command. Setup verifies both accounts
 before changing the registry, preserves the persistent default, and needs no password on subsequent calls. `--check-only`
-only probes access. The integration does not store root passwords or install
+only probes access. To install the provisioning source revision explicitly:
+
+```sh
+cargo install audb-client --git https://github.com/KotDath/audb --rev 0cb1339dc2a5466902cc2fe922d4719d28dff9b5 --locked --force
+```
+
+The integration does not store root passwords or install
 the agent automatically. Flutter SDK is needed to build
 Flutter apps, not to run these commands against an already prepared device.
 

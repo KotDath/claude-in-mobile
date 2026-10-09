@@ -67,8 +67,8 @@ Both CLI and actual MCP stdio return UID 0 with root on phone/emulator, and UID
 100000 without it. Screenshots still work; persistent default remains emulator.
 
 The provisioning helper is currently source-only, not in published audb 0.3.0:
-https://github.com/KotDath/audb/commit/cb9af47. The ordinary root shell API already
-works with released 0.3.0 after provisioning. The audb helper has 97 workspace
+https://github.com/KotDath/audb/commit/0cb1339. The ordinary root shell API already
+works with released 0.3.0 after provisioning. The audb helper has 98 workspace
 tests passing and Clippy --deny warnings passes. Tests include failed credentials,
 SSH policy rejection/key cleanup, preserving defaults, idempotent key installation,
 symlink refusal and a complete-command UID guard. Private local evidence lives
@@ -81,6 +81,16 @@ fixture; it is not a runtime dependency of this integration.
 
 ## GitHub CI
 
-Pending reopening/push; local checks are not GitHub checks. PR #49 was closed,
-and the workflow only triggers for an open PR to main or main/release pushes.
-The final workflow URL/status will be recorded after the new head is checked.
+GitHub rejected reopening #49 via GraphQL and REST (422, no detailed reason).
+A replacement PR was opened from the same updated branch:
+https://github.com/AlexGladkov/claude-in-mobile/pull/85. Its head is mergeable.
+CI run for code head 5b261be:
+https://github.com/AlexGladkov/claude-in-mobile/actions/runs/37920098119.
+At report update: 9 of 10 jobs passed, cargo-audit is still running. These include
+Node 20/22, native Aurora CLI, Desktop, Swift and macOS Rust checks. Final status
+will also be reported on the PR; a later documentation commit triggers another
+run for the final head.
+
+The local PATH audb has been upgraded from 0.2.1 to the source build with setup-root.
+This is not a new published audb release. The helper's tests and symlink safeguards
+are included in the source revision linked above.

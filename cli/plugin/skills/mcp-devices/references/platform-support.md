@@ -25,7 +25,7 @@
 
 ### Aurora OS
 
-- **Backend:** audb >=0.3.0; executable in PATH takes priority over AUDB_PATH.
+- **Backend:** audb ^0.3.0; executable in PATH takes priority over AUDB_PATH.
 - **Device selection:** `--device <registry-id>`; omitted uses audb's default, not the first connected target. Phones and emulators share the same commands.
 - **Supported:** screenshots, coordinate tap/double tap/long press, swipe, Unicode input, named keys, devices, apps, launch, stop, RPM install/uninstall, push/pull, logs, info, screen-size, URL opening, shell and Sailjail permissions.
 - **Not supported:** UI tree/annotate/find/tap-text, clipboard, activity, reboot and screen power. Sensor/perf/sandbox extensions are outside this integration.

@@ -53,7 +53,7 @@ TypeScript и Rust строго проверяют одинаковый диап
 В CI добавлен aurora_cli. Уязвимые npm-зависимости обновлены отдельным изменением;
 lockfile пересобран без старого node_modules, сохранены 8 Linux sharp-веток.
 Чистый npm ci, production audit (0 vulnerabilities), runtime --help и Browser ESM
-import проходят. Это локальные результаты; GitHub CI проверяется после reopening.
+import проходят. Это локальные результаты; GitHub CI запущен на новом PR #85: GitHub отклонил reopening #49.
 
 Root на телефоне настроен через явный setup-root в исходной сборке audb: отдельная
 SSH identity для этого устройства, одноразовый devel-su пароль, проверка UID 0
@@ -64,3 +64,6 @@ UID 100000 без root, рабочие скриншоты и неизменны�
 Повторный setup-root вернул changed=false без пароля. Сама команда setup-root
 ещё не входит в опубликованный audb 0.3.0; исходная ревизия указана в справке.
 Проверка интеграции выполнена с опубликованным audb 0.3.0 в PATH процесса.
+
+Локальный audb в PATH обновлён исходной сборкой с setup-root; новый audb release
+не публиковался. Root runtime API совместим с опубликованным 0.3.0.

@@ -2,7 +2,7 @@
  * Built-in Aurora OS plugin.
  *
  * Wraps AuroraAdapter with screenshots, input, apps, files, diagnostics
- * and Sailjail permissions through audb >=0.3.0.
+ * and Sailjail permissions through audb ^0.3.0.
  */
 
 import type {

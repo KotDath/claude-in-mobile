@@ -54,7 +54,7 @@ Full command documentation split by scope:
 - Use `--compress` on screenshots when sending to LLM — reduces token usage significantly
 - `analyze-screen` gives structured JSON of buttons/inputs/texts — useful for automated testing
 - `find-and-tap` uses fuzzy matching with confidence scoring — good for flaky element names
-- For Aurora, read [`references/aurora.md`](references/aurora.md): audb >=0.3.0, PATH before AUDB_PATH, explicit device IDs, visual input and Sailjail permissions. UI tree is unavailable.
+- For Aurora, read [`references/aurora.md`](references/aurora.md): audb ^0.3.0, PATH before AUDB_PATH, explicit device IDs, visual input and Sailjail permissions. UI tree is unavailable.
 - Desktop commands communicate via JSON-RPC with a companion app over stdin/stdout
 - Combine `ui-dump` + `tap --index N` for reliable element interaction by index
 - Use `wait` between actions in automation scripts to allow UI transitions
