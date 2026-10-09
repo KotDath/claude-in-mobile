@@ -123,6 +123,7 @@ export interface WebViewInspectorLike {
 }
 
 export interface AuroraClientLike {
+  shell(command: string, root?: boolean): string;
   listPackages(): string[];
   pushFile(localPath: string, remotePath: string): string;
   pullFile(remotePath: string, localPath?: string): string;

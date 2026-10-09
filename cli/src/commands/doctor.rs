@@ -274,7 +274,7 @@ fn check_aurora() -> bool {
     section("Aurora");
     match crate::aurora::ensure_supported_version() {
         Ok(path) => {
-            ok(&format!("audb >=0.3.0 found: {}", path.display()));
+            ok(&format!("audb ^0.3.0 found: {}", path.display()));
             true
         }
         Err(error) => {

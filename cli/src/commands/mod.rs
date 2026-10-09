@@ -106,12 +106,14 @@ pub fn run(command: Commands) -> Result<()> {
         Commands::Shell {
             platform,
             command,
+            root,
             simulator,
             device,
             i_know_what_im_doing,
         } => device::shell(
             &platform,
             &command,
+            root,
             simulator.as_deref(),
             device.as_deref(),
             i_know_what_im_doing,

@@ -127,10 +127,14 @@ pub fn open_url(
 pub fn shell(
     platform: &str,
     command: &str,
+    root: bool,
     simulator: Option<&str>,
     device: Option<&str>,
     i_know_what_im_doing: bool,
 ) -> Result<()> {
+    if root && platform != "aurora" {
+        bail!("root is supported only for Aurora.");
+    }
     // SECURITY (issue #41): `shell` executes whatever the caller passes,
     // verbatim, on the device. Gate non-interactive use behind an explicit
     // opt-in to prevent supply-chain / CI misuse. Runs BEFORE any platform
@@ -142,7 +146,7 @@ pub fn shell(
         "android" => android::shell(command, device)?,
         "ios" => ios::shell(command, simulator)?,
         "harmony" => harmony::shell(command, device)?,
-        "aurora" => aurora::shell(command, device)?,
+        "aurora" => aurora::shell_with_root(command, root, device)?,
         _ => unreachable!(),
     };
     Ok(())

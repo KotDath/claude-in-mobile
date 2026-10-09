@@ -217,3 +217,73 @@ fn failed_or_lost_action_is_not_repeated_and_error_data_survives() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("AUDB_INVALID_RESPONSE"));
     assert_eq!(fake.calls().len(), 3);
 }
+
+#[test]
+fn stable_audb_caret_range_matches_typescript() {
+    for (version, accepted) in [
+        ("audb 0.3.0", true),
+        ("audb 0.3.1", true),
+        ("audb 0.2.1", false),
+        ("audb 0.4.0", false),
+        ("audb 1.0.0", false),
+        ("audb 0.3.0-rc.1", false),
+        ("audb 00.3.0", false),
+        ("unknown 0.3.0", false),
+    ] {
+        let fake = Fake::new();
+        fs::write(fake.root.path().join("version"), version).unwrap();
+        let output = fake.run(&["tap", "--platform", "aurora", "1", "2", "--device", "phone"]);
+        assert_eq!(output.status.success(), accepted, "version: {version}");
+        assert_eq!(
+            fake.calls().len(),
+            usize::from(accepted),
+            "version: {version}"
+        );
+    }
+}
+
+#[test]
+fn root_shell_matches_mcp_platform_policy() {
+    let fake = Fake::new();
+    success(fake.run(&[
+        "shell",
+        "--platform",
+        "aurora",
+        "id",
+        "--root",
+        "--device",
+        "phone",
+        "--i-know-what-im-doing",
+    ]));
+    success(fake.run(&[
+        "shell",
+        "--platform",
+        "aurora",
+        "id",
+        "--device",
+        "phone",
+        "--i-know-what-im-doing",
+    ]));
+    let calls = fake.calls();
+    assert!(calls[0]["args"]
+        .as_array()
+        .unwrap()
+        .contains(&Value::from("--root")));
+    assert!(!calls[1]["args"]
+        .as_array()
+        .unwrap()
+        .contains(&Value::from("--root")));
+    for platform in ["android", "ios", "harmony"] {
+        let out = fake.run(&[
+            "shell",
+            "--platform",
+            platform,
+            "id",
+            "--root",
+            "--i-know-what-im-doing",
+        ]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("root is supported only for Aurora"));
+    }
+    assert_eq!(fake.calls().len(), 2);
+}

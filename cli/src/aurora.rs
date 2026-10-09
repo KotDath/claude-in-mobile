@@ -1,4 +1,4 @@
-//! Aurora phone/emulator automation through the audb >=0.3 JSON contract.
+//! Aurora phone/emulator automation through the audb ^0.3.0 JSON contract.
 use crate::utils::process::{run_with_limits, run_with_protocol_limits, terminal_safe};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -46,14 +46,19 @@ pub fn ensure_supported_version() -> Result<PathBuf> {
         bail!("AUDB_VERSION_CHECK_FAILED: update audb in PATH: {INSTALL}");
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    let re = regex::Regex::new(r"\b(\d+)\.(\d+)\.(\d+)\b")?;
+    let re = regex::Regex::new(r"^audb (0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")?;
     let parts = re
-        .captures(&text)
+        .captures(text.trim())
         .context("AUDB_VERSION_UNSUPPORTED: invalid audb version")?;
     let major: u64 = parts[1].parse()?;
     let minor: u64 = parts[2].parse()?;
-    if major == 0 && minor < 3 {
-        bail!("AUDB_VERSION_UNSUPPORTED: audb >=0.3.0 required; update PATH binary: {INSTALL} --force");
+    let patch: u64 = parts[3]
+        .parse()
+        .context("AUDB_VERSION_UNSUPPORTED: invalid patch version")?;
+    if major != 0 || minor != 3 || patch > 9_007_199_254_740_991 {
+        bail!(
+            "AUDB_VERSION_UNSUPPORTED: audb ^0.3.0 required; update PATH binary: {INSTALL} --force"
+        );
     }
     Ok(bin)
 }
@@ -277,8 +282,13 @@ pub fn press_key(key: &str, device: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn shell(shell_command: &str, device: Option<&str>) -> Result<String> {
-    let text = output_text(command(device, &owned(&["shell", shell_command]))?);
+pub fn shell_with_root(shell_command: &str, root: bool, device: Option<&str>) -> Result<String> {
+    let mut args = owned(&["shell"]);
+    if root {
+        args.push("--root".into());
+    }
+    args.push(shell_command.into());
+    let text = output_text(command(device, &args)?);
     print!("{}", terminal_safe(text.as_bytes()));
     Ok(text)
 }

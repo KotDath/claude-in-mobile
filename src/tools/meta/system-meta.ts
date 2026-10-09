@@ -42,6 +42,7 @@ export const systemMeta: ToolDefinition = {
             "metrics", "reset_metrics",
           ],
         },
+        root: { type: "boolean", description: "Aurora shell only: execute through audb as the configured root SSH account; default false" },
         command: { type: "string", description: "Shell command to execute (shell)" },
         url: { type: "string", description: "URL to open (open_url)" },
         ms: { type: "number", description: "Duration in milliseconds (wait, default: 1000)" },

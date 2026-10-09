@@ -37,6 +37,21 @@ describe.skipIf(process.platform === "win32")("audb 0.3 contract", () => {
       if (oldAudb === undefined) delete process.env.AUDB_PATH; else process.env.AUDB_PATH = oldAudb;
     }
   });
+  it.each([
+    ["audb 0.3.0", true], ["audb 0.3.1", true], ["audb 0.2.1", false],
+    ["audb 0.4.0", false], ["audb 1.0.0", false], ["audb 0.3.0-rc.1", false],
+    ["audb 00.3.0", false], ["unknown 0.3.0", false],
+  ])("enforces the declared stable API range for %s", (version, accepted) => {
+    writeFileSync(join(root, "version"), String(version));
+    if (accepted) { client.tap(1, 2); expect(calls()).toHaveLength(1); }
+    else { expect(() => client.tap(1, 2)).toThrow(/\^0\.3\.0/); expect(calls()).toHaveLength(0); }
+  });
+  it("forwards root only when explicitly requested", () => {
+    expect(client.shell("id", true)).toBe("exact output\n\n");
+    client.shell("id");
+    expect(calls()[0].args.slice(-3)).toEqual(["shell", "--root", "id"]);
+    expect(calls()[1].args.slice(-2)).toEqual(["shell", "id"]);
+  });
   it("preserves inventory state, pins overrides and never changes audb's default", async () => {
     const adapter = new AuroraAdapter(client);
     expect(adapter.listDevices().map(d => [d.id, d.state, d.isSimulator])).toEqual([["phone", "unknown", false], ["emulator", "unknown", true]]);

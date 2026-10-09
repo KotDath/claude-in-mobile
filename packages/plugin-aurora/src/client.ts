@@ -1,5 +1,5 @@
 import { execFileSync } from "child_process";
-import { accessSync, constants, rmSync, statSync } from "fs";
+import { accessSync, constants, readFileSync, rmSync, statSync } from "fs";
 import { delimiter, join, resolve, basename } from "path";
 import { MobileError } from "mcp-devices/errors";
 import { validateDeviceId } from "mcp-devices/utils/sanitize";
@@ -35,6 +35,18 @@ export interface AuroraClientOptions {
   /** Explicit dependency injection; environment resolution prefers PATH. */
   binaryPath?: string;
 }
+// audb is an external Rust CLI, not an npm dependency. Declare its public API
+// requirement in the plugin manifest and enforce the pre-1.0 caret range here.
+const metadata = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  externalTools: { audb: { version: string; jsonSchemaVersion: number } };
+};
+const AUDB_CONTRACT = metadata.externalTools.audb;
+const supportedVersion = AUDB_CONTRACT.version.match(/^\^0\.(\d+)\.(\d+)$/);
+if (!supportedVersion || AUDB_CONTRACT.jsonSchemaVersion !== 1) {
+  throw new Error("Invalid Aurora plugin audb contract; expected ^0.MINOR.PATCH and schemaVersion 1.");
+}
+const SUPPORTED_MINOR = Number(supportedVersion[1]);
+const MINIMUM_PATCH = Number(supportedVersion[2]);
 const MAX_OUTPUT = 64 * 1024 * 1024;
 const INSTALL = "cargo install audb-client --version 0.3.0 --locked";
 
@@ -74,9 +86,10 @@ export class AuroraClient {
     } catch {
       throw new AudbCommandError("AUDB_VERSION_CHECK_FAILED", `Cannot run audb --version. Install/update audb in PATH: ${INSTALL}`);
     }
-    const match = version.match(/\b(\d+)\.(\d+)\.(\d+)\b/);
-    if (!match || (Number(match[1]) === 0 && Number(match[2]) < 3)) {
-      throw new AudbCommandError("AUDB_VERSION_UNSUPPORTED", `audb >= 0.3.0 is required. Update the binary in PATH: ${INSTALL} --force`);
+    const match = version.match(/^audb (0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+    if (!match || Number(match[1]) !== 0 || Number(match[2]) !== SUPPORTED_MINOR ||
+        !Number.isSafeInteger(Number(match[3])) || Number(match[3]) < MINIMUM_PATCH) {
+      throw new AudbCommandError("AUDB_VERSION_UNSUPPORTED", `audb ${AUDB_CONTRACT.version} is required. Update the binary in PATH: ${INSTALL} --force`);
     }
     this.versionChecked = true;
     return this.binary;
@@ -175,7 +188,7 @@ export class AuroraClient {
   pullFile(remote: string, local?: string): string {
     return outputText(this.execute(["pull", remote, "--output", local ?? (basename(remote) || "pulled_file")]));
   }
-  shell(command: string): string { return outputText(this.execute(["shell", command])); }
+  shell(command: string, root = false): string { return outputText(this.execute(["shell", ...(root ? ["--root"] : []), command])); }
   getLogs(options: LogOptions = {}): string {
     if (options.tag) throw new MobileError("Aurora logs do not support Android tag filters.", "CAPABILITY_NOT_SUPPORTED");
     const args = ["logs", "--lines", String(options.lines ?? 100)];

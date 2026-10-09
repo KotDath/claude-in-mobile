@@ -10,7 +10,8 @@ root = Path(__file__).parent
 mode = (root / 'mode').read_text().strip() if (root / 'mode').exists() else ''
 a = sys.argv[1:]
 if a == ['--version']:
-    print('audb 0.2.1' if mode == 'old' else 'audb 0.3.0')
+    print((root / 'version').read_text().strip() if (root / 'version').exists()
+          else 'audb 0.2.1' if mode == 'old' else 'audb 0.3.0')
     sys.exit()
 target = a[a.index('--device') + 1] if '--device' in a else None
 payload = sys.stdin.buffer.read()

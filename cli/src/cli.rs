@@ -192,6 +192,10 @@ pub enum Commands {
         /// Command to execute
         command: String,
 
+        /// Aurora only: execute through audb as the configured root SSH account
+        #[arg(long)]
+        root: bool,
+
         /// iOS Simulator name
         #[arg(long)]
         simulator: Option<String>,
@@ -1492,7 +1496,7 @@ pub enum Commands {
         command: ConfigCommands,
     },
 
-    /// Aurora status, readiness and full permission operations through audb >=0.3
+    /// Aurora status, readiness and full permission operations through audb ^0.3.0
     Aurora {
         #[arg(long)]
         device: Option<String>,
