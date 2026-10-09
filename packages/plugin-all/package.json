@@ -1,0 +1,30 @@
+{
+  "name": "@mcp-devices/plugin-all",
+  "version": "4.4.1",
+  "description": "Meta-package: installs all mcp-devices platform plugins (android, ios, web, desktop, aurora, harmony).",
+  "type": "module",
+  "files": [
+    "README.md"
+  ],
+  "keywords": [
+    "mcp",
+    "mcp-devices",
+    "plugin",
+    "meta"
+  ],
+  "author": "Alex Gladkov",
+  "license": "MIT",
+  "dependencies": {
+    "@mcp-devices/plugin-android": "*",
+    "@mcp-devices/plugin-ios": "*",
+    "@mcp-devices/plugin-web": "*",
+    "@mcp-devices/plugin-desktop": "*",
+    "@mcp-devices/plugin-aurora": "*",
+    "@mcp-devices/plugin-harmony": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexGladkov/claude-in-mobile.git",
+    "directory": "packages/plugin-all"
+  }
+}

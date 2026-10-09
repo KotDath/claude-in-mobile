@@ -1,4 +1,5 @@
-import { validatePackageName, validatePath, sanitizeForShell } from "../../utils/sanitize.js";
+import { validatePackageName, validateSandboxPath } from "../../utils/sanitize.js";
+import { buildDeviceShellCommand } from "../../utils/device-shell.js";
 import { truncateOutput } from "../../utils/truncate.js";
 import { defineTool, z } from "../define-tool.js";
 import { deviceIdField } from "../common-schema.js";
@@ -21,46 +22,39 @@ export const sandboxFileListTool = defineTool({
         'Relative path inside the sandbox to list (default: "."). ' +
           'Examples: "databases", "shared_prefs", "files/cache".',
       ),
-    root: z.enum(["config", "cache", "data"]).optional().describe("Aurora sandbox root (default: data)"),
     platform: androidPlatformEnum,
     deviceId: deviceIdField,
   }),
   handler: async (args, ctx) => {
     const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-    if (platform !== "android" && platform !== "aurora") {
-      return errorResult("sandbox_file_list is available on Android and Aurora.");
+    if (platform !== "android") {
+      return errorResult("sandbox_file_list is only available on Android.");
     }
 
     const pkg = args.package;
     validatePackageName(pkg);
 
-    if (platform === "aurora") {
-      const rawPath = args.path ?? "";
-      validatePath(rawPath || ".", "path");
-      const result = ctx.deviceManager.getAuroraClient().execute([
-        "sandbox", "list", pkg, args.root ?? "data", rawPath,
-      ]);
-      return textResult(truncateOutput(JSON.stringify(result, null, 2), { maxChars: 15000, maxLines: 300 }));
-    }
-
-    const rawPath = args.path ?? ".";
-    validatePath(rawPath, "path");
-    const safePath = sanitizeForShell(rawPath) || ".";
+    const path = args.path ?? ".";
+    validateSandboxPath(path);
 
     let output: string;
     try {
-      output = ctx.deviceManager.shell(`run-as ${pkg} ls -la ${safePath}`, "android", deviceId);
+      output = ctx.deviceManager.shell(
+        buildDeviceShellCommand(["run-as", pkg, "ls", "-la", path]),
+        "android",
+        deviceId,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
-      return errorResult(`Failed to list directory: ${msg}`);
+      return errorResult("Failed to list sandbox directory.");
     }
 
     if (isRunAsFailure(output)) return errorResult(runAsUnavailableHint(pkg));
 
     return textResult(
       truncateOutput(
-        `Sandbox listing for "${pkg}" / "${safePath}":\n\n${output || "(empty directory)"}`,
+        `Sandbox listing for "${pkg}" / "${path}":\n\n${output || "(empty directory)"}`,
         { maxChars: 15000, maxLines: 300 },
       ),
     );

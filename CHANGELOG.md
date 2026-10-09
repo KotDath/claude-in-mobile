@@ -5,6 +5,285 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [4.4.1] — 2026-09-13
+
+### Security
+- Hardened local persistence boundaries used by runtime configuration,
+  recordings, browser profiles, performance artifacts, screenshots, and native
+  CLI state with bounded reads, private permissions, symlink rejection, and
+  atomic replacement.
+- Bounded subprocess output, network responses, JSON/NDJSON payloads, image
+  decoding, directory scans, accessibility trees, debugger queues/caches, and
+  browser snapshots across the TypeScript, Rust, Kotlin, and Python runtimes.
+- Added strict schemas and identifier/path validation at browser CDP, desktop
+  JSON-RPC, WebDriverAgent, simulator, store API, HarmonyOS, recorder, and
+  debugger trust boundaries. Error and terminal output now redact credentials
+  and strip control and bidirectional formatting characters.
+- Published npm tarballs no longer expose the development-only self-link step as
+  an install lifecycle script.
+
+### Fixed
+- Restored macOS CLI release builds by routing the iOS simulator doctor probe
+  through the bounded command runner.
+
+### Changed
+- Browser and desktop automation now reject oversized inputs, screenshots,
+  gestures, and session workloads instead of allowing unbounded memory, CPU,
+  file-descriptor, or process growth.
+- The native CLI stores flow failure captures and compiled Swift helpers through
+  private, collision-resistant paths and refuses symlinked screenshot outputs.
+- Concurrent REPL sessions now serialize only the PTY process-creation
+  handshake, preventing intermittent spawn failures while preserving concurrent
+  session execution.
+- CI now runs desktop-companion Gradle tests, compiles the Python debug daemon,
+  typechecks every shipped Swift helper, and checks the Rust CLI on macOS.
+
+## [4.3.0] — 2026-09-10
+
+### Fixed
+- **REPL sessions failed to start relative commands in WSL.** The native
+  supervisor now passes its allowlisted `PATH`, `HOME`, locale, and timezone
+  environment into PTY children while preserving explicit per-session
+  overrides.
+
+## [4.2.3] — 2026-09-09
+
+### Fixed
+- **#60 — iOS UI trees were empty and screenshot-coordinate taps missed their targets.**
+  Root causes: WebDriverAgent's accessibility source omitted element geometry,
+  while screenshot pixel coordinates were sent unchanged to its point-based
+  input API. iOS now reads `/source?format=json` and keeps device-scoped
+  screenshot-to-point transforms across compressed and full-resolution
+  captures. Verified on an iPhone 17 Pro Simulator with a non-empty semantic
+  tree and a `442x960` screenshot mapped onto `1206x2622` device pixels and
+  `402x874` WDA points (#67, #68).
+- **WebDriverAgent startup and recovery could select stale artifacts, sessions,
+  or ports.** Builds now use one deterministic DerivedData directory and always
+  run incremental `build-for-testing`; session revalidation is serialized; and
+  port reservation probes the same IPv4 wildcard address WDA binds (#64, #65,
+  #66).
+
+## [4.2.2] — 2026-09-09
+
+### Fixed
+- **#70 — canonical Homebrew formula failed to load.**
+  Release automation now removes unsupported `oldname`/`oldnames` directives
+  while updating `mcp-devices.rb`. Cross-tap legacy installations require a
+  manual reinstall; the canonical formula continues to provide the
+  `claude-in-mobile` binary alias.
+
+## [4.2.1] — 2026-09-09
+
+### Fixed
+- **#69 — release workflow failed after successful GitHub/npm publication.**
+  Root cause: the Homebrew matrix still pushed to the retired
+  `AlexGladkov/homebrew-claude-in-mobile` repository, where
+  `HOMEBREW_TAP_TOKEN` receives HTTP 403. Releases now update only the
+  canonical `AlexGladkov/homebrew-tap`, allowing checksum verification to run.
+
+## [4.2.0] — 2026-09-09
+
+### Added
+- **Performance Lab.** MCP performance actions now capture bounded Android
+  Perfetto, iOS Instruments, and browser CDP traces plus private Android HPROF,
+  iOS Allocations, and Chrome HeapProfiler artifacts with metadata-only diffs.
+- **Native performance CLI.** `perf-trace`, `perf-heap-capture`, and
+  `perf-heap-diff` provide direct Android/iOS artifact workflows without
+  hosting the Node MCP server.
+- **HarmonyOS Next platform plugin.** New
+  `@mcp-devices/plugin-harmony` uses HDC and ArkXTest for device discovery,
+  screenshots and annotations, UI hierarchy, element targeting and waits,
+  touch/key/text input, app lifecycle, HAP install, permissions, shell, HiLog,
+  system information, and file transfer. `HDC_PATH` and `HARMONY_DEVICE_ID`
+  support non-default SDK layouts and deterministic multi-device selection.
+- **HarmonyOS workflow and advanced APIs.** Shared flows and the recorder now
+  execute HarmonyOS actions through the same dispatcher. The Harmony plugin
+  adds module-qualified Ability launches, ArkWeb DevTools discovery/forwarding,
+  debug-signed app sandbox list/read/push/pull, and filtered ArkXTest runs.
+  The shared `system` surface can open URLs, wait for HiLog patterns, and
+  grant, revoke, or reset HarmonyOS runtime permissions.
+- **Capability-driven app and file operations.** `app(action:'list')`,
+  `app(action:'uninstall')`, `system(action:'file_push')`, and
+  `system(action:'file_pull')` now route through platform adapters instead of
+  Aurora-only raw clients. Aurora and HarmonyOS implement both capabilities.
+- Added persistent tool-plugin management through
+  `mcp-devices plugins` and `mcp-devices plugin enable|disable debug`.
+  Platform and tool-plugin updates preserve each other's fields in the shared
+  configuration file.
+- The native Rust CLI now supports HarmonyOS through HDC for screen capture
+  and annotations, screen dimensions, coordinate and element input, UI waits
+  and assertions, JSON flows, recorded-scenario playback, app lifecycle,
+  permissions, app-sandbox access, ArkWeb inspection, ArkXTest execution, HAP
+  installation, HiLog, system information, shell commands, URL opening, and
+  file transfer. Ability launches accept optional `--ability` and `--module`.
+
+### Fixed
+- iOS Simulator `ui-jank` tracing now records Time Profiler with an explicit
+  fallback warning instead of returning an Animation Hitches archive with zero
+  instrument tables.
+- Restored `wait_log`, `pid_of`, and `is_running` to the primary `system`
+  meta-tool and standalone alias map; their handlers existed but were
+  unreachable from the normal MCP surface.
+- Runtime plugin manifests now derive or declare the release version
+  consistently, and Aurora advertises its already-implemented file-transfer
+  capability.
+- Config persistence now creates the selected config directory atomically
+  enough for concurrent callers; its Rust regression no longer mutates the
+  process-wide `HOME` variable.
+
+### Changed
+- Release verification and npm publishing now cover 23 synchronized
+  versions/manifests and all eight release-coupled scoped packages, including
+  `@mcp-devices/plugin-harmony`. The release lockfile guard verifies Sharp's
+  Linux optional packages directly instead of relying on the version-sensitive
+  `@emnapi/runtime` occurrence count.
+- GitHub workflows now use the Node.js 24-based `actions/checkout@v7` and
+  `actions/setup-node@v7`. The supported application runtime remains Node.js
+  20 or newer; CI exercises Node.js 20 and 22.
+- `mcp-devices doctor` now exits nonzero when any selected platform toolchain
+  is missing. The native CLI doctor also checks `hdc` or `HDC_PATH`.
+
+### Security
+- All new HDC operations use argv-form process execution. Device IDs, bundle
+  names, Ability/module names, and file paths are validated before dispatch;
+  URL query strings remain a single argv value and never pass through the host
+  shell.
+
+## [4.1.0] — 2026-08-31
+
+### Added
+- **Grok Build plugin support (#61).** Native `.grok-plugin` marketplace and
+  plugin manifest, a bundled MCP server `mobile` (`npx -y mcp-devices`),
+  `mcp-devices setup grok` / `--global`, and an `--init grok` config snippet:
+  `grok plugin marketplace add AlexGladkov/claude-in-mobile` then
+  `grok plugin install mcp-devices --trust`.
+- **REPL/TUI observability.** `repl_snapshot` gains `mode: 'grid' | 'raw' | 'both'`
+  and `history: true | N` — the raw byte stream plus a 50-frame grid filmstrip turn
+  point-in-time snapshots into a timeline for pinning down console issues. New
+  `repl_resize` performs a real PTY resize (`MasterPty::resize` + vt100 `set_size`,
+  cols/rows clamped 1..=1000). `repl_spawn` gains opt-in asciicast v2 recording
+  (`record` / `castPath`) written from the reader thread (`create_new` + `0600`,
+  confined to the temp dir, no external asciinema needed). Secret redaction now runs
+  Rust-side before any byte is retained or written to disk (new
+  `cli/src/plugins/repl/redaction.rs`, fail-closed, kept in lockstep with the
+  TypeScript patterns by a parity test). Zero new crates; all existing `repl_*`
+  contracts unchanged (`repl_resize` is additive) and `apiVersion` stays `1`.
+  `repl_key` now covers the full editing/navigation set (`backspace`, `esc`,
+  `delete`, `home`, `end`, `pageup`, `pagedown`, `shift-tab`, `space`,
+  `ctrl-a/e/k/l/n/o/p/r/u/w`) so input fields, dialogs and long lists in a TUI are
+  actually drivable. Expect timing is clamped (`idleMs` ≤ 60s, `timeoutMs` ≤ 5min)
+  so driving a continuously-redrawing TUI can never hang the harness; a live-TUI
+  regression test guards this.
+
+### Fixed
+- **#60 — iOS `ui` tool: three defects fixed at their shared roots.**
+  (1) `ui(action:'tree')` ignored `compact` / `format:'semantic'` / `showAll` /
+  `fresh` on iOS: the iOS branch early-returned a bespoke formatter, bypassing the
+  shared format/cache layer. It now converts the WDA tree and routes through the
+  same path as Android; SecureTextField values render as `[REDACTED]` (also
+  closing a pre-existing Android leak). (2) input-action hints were always empty:
+  `wda-client` unwrapped WDA replies with a falsy `value || response`, returning
+  the envelope on `value:null` instead of throwing, and the hint cache was
+  poisoned with `[]`. The trust boundary is validated now and the cache never
+  overwrites a non-empty snapshot with an empty one. (3) `ui` docs/examples used
+  parameters the tools silently stripped (`label` on `find_tap` / `assert_visible`
+  / `wait`); the meta schema is honest now and `plugin-ios.md` uses the correct
+  params (`description` / `text`).
+- **#59 — `screen(action:'capture', preset:…)` ignored the preset on every
+  platform.** The Zod schema (`.default(540/960/55)`) and the meta facade
+  (`default:` hints) filled `maxWidth` / `maxHeight` / `quality` before the
+  handler, so `args.x ?? preset?.x` never fired and every preset returned the
+  medium frame. This is #56 (3.15.1) re-introduced by the 3.x→4.0 merge, which
+  dropped the fix and its regression test. Restored `.optional()` + an explicit
+  medium fallback and re-added the `low < medium < high` guard at the facade level.
+
+### Changed
+- The Claude Code plugin manifest (`cli/plugin/.claude-plugin/plugin.json`) does
+  **not** auto-register the `mobile` MCP server — that stays opt-in via
+  `claude mcp add` to avoid double-registration for existing users. Grok gets
+  zero-config MCP via its own `.grok-plugin` manifest.
+- `verify-plugin-versions` now asserts it checked exactly 13 version fields, so
+  adding a manifest without extending the loop fails CI instead of silently
+  passing on a stale subset (the 4.0.1 class).
+
+## [4.0.2] — 2026-08-19
+
+### Fixed
+- **Release hotfix for 4.0.1.** The 4.0.1 tag bumped only the four top-level
+  version manifests; the seven scoped plugin packages
+  (`@mcp-devices/plugin-{android,ios,web,desktop,aurora,debug,all}`) were left
+  on 4.0.0, so `verify-plugin-versions` failed and `publish-npm` was skipped —
+  4.0.1 never reached npm. 4.0.2 bumps all eleven version fields together. The
+  Windows toolchain-detection fix (#58) below ships in this release.
+
+## [4.0.1] — 2026-08-19
+
+### Fixed
+- **#58 — Toolchain doctor reported `adb`/`java` (and every other CLI) as
+  `MISSING` on Windows even when they were on `PATH`.** `isBinAvailable` in
+  `src/runtime/platform-cli.ts` probed binaries with
+  `execFileSync("/bin/sh", ["-c", "command -v <bin>"])`. Windows has no
+  `/bin/sh`, so every probe threw `ENOENT`, was silently swallowed by a bare
+  `catch`, and each binary (`adb`, `java`, `xcrun`, `flutter-aurora`) was
+  unconditionally reported `MISSING` regardless of `PATH` / `ANDROID_HOME` /
+  `JAVA_HOME` — only `web` (no external-CLI probe) survived, so Windows users
+  saw only the web MCP. Detection is now routed through a new cross-platform
+  `src/utils/which-bin.ts`: on Windows it walks `PATH × PATHEXT` via
+  `existsSync` (no `/bin/sh`, no `where.exe`, no shell), on POSIX it keeps
+  `command -v` in safe argv form. `ENOENT` is now distinguished from a genuine
+  "not found" instead of masking every failure.
+
+### Security
+- Removed the only shell-interpolation site in the repo: the binary probe no
+  longer string-interpolates the binary name into a `sh -c` script (it is
+  passed as a positional `$1` argument), closing a latent CWE-78 sink.
+
+## [4.0.0] — 2026-08-18
+
+The **mcp-devices** edition. `claude-in-mobile` is re-architected into a
+microkernel + on-demand plugins and ships under the new canonical name
+`mcp-devices`. It is delivered as **two editions of the same tool**:
+
+- **`mcp-devices`** — a slim base; you install only the platforms you need.
+- **`claude-in-mobile`** — the all-in-one edition; bundles every platform and
+  enables them all out of the box (`npm i -g claude-in-mobile`, unchanged).
+
+### Changed
+- **Renamed `claude-in-mobile` → `mcp-devices` as the canonical name**, and split
+  the product into a microkernel + on-demand platform plugins. `npm i mcp-devices`
+  now installs only the kernel + built-in tools; each platform is loaded on
+  demand from its own package. Both `mcp-devices` and `claude-in-mobile` commands
+  are available.
+- **`claude-in-mobile` is now the all-in-one edition.** It depends on the
+  `mcp-devices` engine plus `@mcp-devices/plugin-all` and starts with all
+  platforms enabled, so existing users get everything in one package with no
+  extra setup.
+
+### Added
+- On-demand platform packages: `@mcp-devices/plugin-android`,
+  `@mcp-devices/plugin-ios`, `@mcp-devices/plugin-web`,
+  `@mcp-devices/plugin-desktop`, `@mcp-devices/plugin-aurora`, plus the
+  `@mcp-devices/plugin-all` meta-package that pulls in all five.
+- `@mcp-devices/plugin-debug` — runtime debugger for live **debuggable** apps
+  (Android JDWP + iOS LLDB): breakpoints, stepping, stack/locals, expression
+  eval, variable mutation. The first on-demand *tool-plugin* (12 tools); enable
+  with `MCP_DEVICES_TOOL_PLUGINS=debug`.
+- `@mcp-devices/plugin-api` — the public plugin contract (Capability enum,
+  `SourcePlugin` / `PluginManifest` / `PluginContext` types, EventBus topics),
+  versioned independently so plugins can target a stable API.
+
+### Security
+- Scoped plugins are published with npm provenance (Sigstore attestation), so the
+  on-demand code that runs in the user's MCP runtime is verifiably built from
+  this repository.
+- The debug plugin never returns raw memory to the model (secret redaction +
+  length caps), gates `eval`/`set_var` behind `android:debuggable=true`, binds
+  JDWP to loopback, and re-validates identifiers inside the iOS daemon.
+- Remediated the high-severity npm + cargo advisories inherited by the branch
+  (sharp/libvips, ip-address SSRF, quinn-proto, anyhow, crossbeam-epoch).
+
 ## [3.14.0] — 2026-06-16
 
 REPL plugin hardening (closes the #46 hang) plus a systemic audit of the

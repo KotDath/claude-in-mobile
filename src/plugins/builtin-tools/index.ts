@@ -35,22 +35,22 @@ import type {
   PluginContext,
   PluginManifest,
   SourcePlugin,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 
 import {
   registerTools,
   registerToolsHidden,
   registerAliasesWithDefaults,
   registerAllModuleMetadata,
-  type ToolDefinition,
 } from "../../tools/registry.js";
+import type { ToolDefinition } from "../../tools/registry.js";
 import {
   ALWAYS_VISIBLE,
   PROFILE_VISIBLE,
   VALID_PROFILES,
   MODULE_METADATA,
-  type MobileProfile,
 } from "../../profiles.js";
+import type { MobileProfile } from "../../profiles.js";
 import {
   META_TOOL_DESCRIPTORS,
   META_SHORT_ALIASES,
@@ -60,7 +60,7 @@ import {
 export const BUILTIN_TOOLS_PLUGIN_MANIFEST: PluginManifest = {
   id: "builtin-tools",
   name: "Built-in tools",
-  version: "3.12.0",
+  version: "4.4.1",
   apiVersion: "1",
   // Marker-only capability — meta-tools fan out to platform plugins, so we
   // must not show up in `findByCapability("screen")` etc.
@@ -108,9 +108,9 @@ export class BuiltinToolsPlugin implements SourcePlugin {
 
     // Legacy registry — `PluginContext.registerTool` would lose the
     // ToolContext-aware handler signature. See header comment.
-    registerTools(visibleTools);
+    registerTools(visibleTools, this.manifest.id);
     if (hiddenToolDefs.length > 0) {
-      registerToolsHidden(hiddenToolDefs);
+      registerToolsHidden(hiddenToolDefs, this.manifest.id);
     }
 
     registerAllModuleMetadata(MODULE_METADATA);

@@ -254,9 +254,28 @@ describe("sandbox_prefs_write", () => {
     );
     const text = (result as { text: string }).text;
     expect(text).toContain("theme");
-    expect(text).toContain("dark");
     expect(text).toContain("string");
     expect(text).toContain("settings");
+  });
+
+  it("escapes XML metacharacters without returning the preference value", async () => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext(() => "", {
+      deviceManager: {
+        getCurrentPlatform: vi.fn(() => "android"),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell,
+      } as unknown as ToolContext["deviceManager"],
+    });
+    const value = "private<&'";
+    const result = await handler(
+      { package: "com.example.app", file: "settings", key: "theme", value },
+      ctx,
+    );
+
+    expect(shell.mock.calls[0]?.[0]).not.toContain(value);
+    expect(shell.mock.calls[0]?.[0]).toContain("&lt;");
+    expect((result as { text: string }).text).not.toContain(value);
   });
 });
 
@@ -273,7 +292,7 @@ describe("sandbox_sqlite_query", () => {
       makeIosContext(),
     );
     expect((result as { text: string; isError: boolean }).isError).toBe(true);
-    expect((result as { text: string }).text).toContain("available on Android and Aurora");
+    expect((result as { text: string }).text).toContain("only available on Android");
   });
 
   it("throws MobileError for invalid package name", async () => {
@@ -322,6 +341,24 @@ describe("sandbox_sqlite_query", () => {
     const ctx = makeMockContext();
     await expect(
       handler({ package: "com.example.app", database: "app.db", query: "SELECT 1; DROP TABLE x" }, ctx)
+    ).rejects.toThrow(MobileError);
+  });
+
+  it("rejects SQLite CLI and file-writing escape paths", async () => {
+    const ctx = makeMockContext();
+    await expect(
+      handler({
+        package: "com.example.app",
+        database: "app.db",
+        query: ".schema\n.shell id",
+      }, ctx),
+    ).rejects.toThrow(MobileError);
+    await expect(
+      handler({
+        package: "com.example.app",
+        database: "app.db",
+        query: "SELECT writefile('owned', 'x')",
+      }, ctx),
     ).rejects.toThrow(MobileError);
   });
 
@@ -403,7 +440,7 @@ describe("sandbox_file_list", () => {
       makeIosContext(),
     );
     expect((result as { text: string; isError: boolean }).isError).toBe(true);
-    expect((result as { text: string }).text).toContain("available on Android and Aurora");
+    expect((result as { text: string }).text).toContain("only available on Android");
   });
 
   it("throws MobileError for invalid package name", async () => {
@@ -425,20 +462,6 @@ describe("sandbox_file_list", () => {
     expect(text).toContain("shared_prefs");
   });
 
-  it("uses default path '.' when path is not specified", async () => {
-    const shellFn = vi.fn(() => "files  databases");
-    const ctx = makeMockContext(() => "", {
-      deviceManager: {
-        getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
-        shell: shellFn,
-      } as any,
-    });
-    await handler({ package: "com.example.app" }, ctx);
-    const cmd = shellFn.mock.calls[0][0] as string;
-    expect(cmd).toContain("ls -la");
-    expect(cmd).toContain(".");
-  });
 
   it("returns run-as failure hint when output contains not debuggable", async () => {
     const ctx = makeMockContext(() => "run-as: package not found: com.example.app");
@@ -492,7 +515,7 @@ describe("sandbox_file_read", () => {
       makeIosContext(),
     );
     expect((result as { text: string; isError: boolean }).isError).toBe(true);
-    expect((result as { text: string }).text).toContain("available on Android and Aurora");
+    expect((result as { text: string }).text).toContain("only available on Android");
   });
 
   it("throws MobileError for invalid package name", async () => {

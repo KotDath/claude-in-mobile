@@ -1,6 +1,6 @@
 import { defineTool, z } from "../define-tool.js";
 import { platformEnum, deviceIdField } from "../common-schema.js";
-import { analyzeScreen, formatScreenAnalysis, UiElement } from "../../adb/ui-parser.js";
+import { analyzeScreen, formatScreenAnalysis, UiElement } from "../../ui-tree/ui-parser.js";
 import { getUiElements } from "../helpers/get-elements.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult } from "../../utils/tool-result.js";
@@ -18,7 +18,7 @@ export const uiAnalyze = defineTool({
     let activity: string | undefined;
 
     try {
-      const result = await getUiElements(ctx, currentPlatform);
+      const result = await getUiElements(ctx, currentPlatform, deviceId);
       screenElements = result.elements;
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -44,7 +44,7 @@ export const uiAnalyze = defineTool({
       }
     }
 
-    if (!currentPlatform || !["android", "ios", "desktop"].includes(currentPlatform)) {
+    if (!currentPlatform || !["android", "ios", "desktop", "harmony"].includes(currentPlatform)) {
       if (currentPlatform) {
         return textResult(`ui(action:'analyze') is not supported for platform: ${currentPlatform}`);
       }

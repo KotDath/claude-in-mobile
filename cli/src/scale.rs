@@ -11,8 +11,14 @@ pub fn parse_size(s: &str) -> Result<(f64, f64)> {
     if parts.len() != 2 {
         anyhow::bail!("Invalid size format '{}'. Use WxH (e.g. 540x960)", s);
     }
-    let w: f64 = parts[0].trim().parse().context("Invalid width in --from-size")?;
-    let h: f64 = parts[1].trim().parse().context("Invalid height in --from-size")?;
+    let w: f64 = parts[0]
+        .trim()
+        .parse()
+        .context("Invalid width in --from-size")?;
+    let h: f64 = parts[1]
+        .trim()
+        .parse()
+        .context("Invalid height in --from-size")?;
     if w <= 0.0 || h <= 0.0 {
         anyhow::bail!("Size values must be positive");
     }
@@ -37,13 +43,14 @@ pub fn apply_scale(
     };
 
     let (dev_w, dev_h): (f64, f64) = match platform {
-        "android" => {
+        "android" | "aurora" => {
             let (w, h) = crate::android::get_screen_size(device)?;
             (w as f64, h as f64)
         }
-        "aurora" => {
-            let (w, h) = crate::aurora::get_screen_size(device)?;
-            (w as f64, h as f64)
+        "harmony" => {
+            let data = crate::harmony::screenshot(device)?;
+            let image = image::load_from_memory(&data)?;
+            (image.width() as f64, image.height() as f64)
         }
         "ios" => {
             let data = crate::ios::screenshot(simulator)?;

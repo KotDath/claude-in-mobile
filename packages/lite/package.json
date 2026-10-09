@@ -1,11 +1,11 @@
 {
-  "name": "claude-in-mobile-lite",
+  "name": "mcp-devices-lite",
   "version": "1.0.0",
   "description": "Lightweight MCP server for mobile automation — optimized for small local LLMs (Llama 3 8B, Mistral 7B, Phi-3, Gemma 2B)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "claude-in-mobile-lite": "dist/index.js"
+    "mcp-devices-lite": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -31,12 +31,14 @@
     "dist"
   ],
   "dependencies": {
-    "claude-in-mobile": "*",
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@mcp-devices/plugin-api": "1.0.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "mcp-devices": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
-  }
+  },
+  "private": true
 }

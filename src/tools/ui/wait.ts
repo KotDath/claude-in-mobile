@@ -1,6 +1,6 @@
 import { defineTool, z } from "../define-tool.js";
 import { platformEnum, deviceIdField } from "../common-schema.js";
-import { findElements, formatElement } from "../../adb/ui-parser.js";
+import { findElements, formatElement } from "../../ui-tree/ui-parser.js";
 import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError } from "../../errors.js";
 import { getUiElements } from "../helpers/get-elements.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
@@ -12,7 +12,7 @@ export const uiWait = defineTool({
   description: "Wait for UI element to appear (polling with timeout)",
   schema: z.object({
     text: z.string().optional().describe("Element text to wait for (partial match, case-insensitive)"),
-    resourceId: z.string().optional().describe("Android: resource ID to wait for (partial match)"),
+    resourceId: z.string().optional().describe("Android/HarmonyOS: resource ID to wait for (partial match)"),
     className: z.string().optional().describe("Class name to wait for"),
     timeout: z.number().default(5000).describe("Max wait time in ms (default: 5000)"),
     interval: z.number().default(500).describe("Poll interval in ms (default: 500)"),
@@ -20,7 +20,7 @@ export const uiWait = defineTool({
     deviceId: deviceIdField,
   }),
   handler: async (args, ctx) => {
-    const { platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+    const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
     const timeout = args.timeout;
     const interval = args.interval;
     const searchText = args.text;
@@ -35,7 +35,7 @@ export const uiWait = defineTool({
 
     while (Date.now() - startTime < timeout) {
       try {
-        const { elements: lastElements } = await getUiElements(ctx, currentPlatform);
+        const { elements: lastElements } = await getUiElements(ctx, currentPlatform, deviceId);
 
         const found = findElements(lastElements, {
           text: searchText,

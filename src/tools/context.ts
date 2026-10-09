@@ -9,7 +9,8 @@
  */
 
 import { DeviceManager, createFullDeviceManager, Platform } from "../device-manager.js";
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
+import type { ScreenshotScale } from "./context/shared-state-class.js";
 
 // Re-export submodule symbols so every existing import path keeps working
 export {
@@ -39,7 +40,11 @@ import {
 } from "./context/shared-state.js";
 import { iosTreeToUiElements, formatIOSUITree } from "./context/ios-helpers.js";
 
-// Shared device manager singleton
+// Fallback DeviceManager for tests / callers that don't inject one. The MCP
+// server (src/index.ts) passes a kernel-backed DeviceManager into
+// createToolContext, which is what production tools use. Post-4.0.0 this
+// fallback has an empty adapter map (all platforms are separate packages), so
+// it only serves tests that construct adapters explicitly.
 export const deviceManager = createFullDeviceManager();
 
 // Bound hint functions for the shared deviceManager (non-turbo defaults for backward compat)
@@ -49,7 +54,7 @@ export const getElementsForPlatform = createGetElementsForPlatform(deviceManager
 // Platform parameter schema (reused across tools)
 export const platformParam = {
   type: "string",
-  enum: ["android", "ios", "desktop", "aurora", "browser"],
+  enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
   description: "Target platform. If not specified, uses the active target.",
 };
 
@@ -62,11 +67,11 @@ export interface ToolContext {
   setCachedElements: (platform: string, elements: UiElement[]) => void;
   lastScreenshotMap: Map<string, Buffer>;
   lastUiTreeMap: Map<string, { text: string; timestamp: number }>;
-  screenshotScaleMap: Map<string, { scaleX: number; scaleY: number }>;
+  screenshotScaleMap: Map<string, ScreenshotScale>;
   generateActionHints: (platform?: string) => Promise<string>;
   getElementsForPlatform: (plat: string) => Promise<UiElement[]>;
-  iosTreeToUiElements: (tree: any) => UiElement[];
-  formatIOSUITree: (tree: any, indent?: number) => string;
+  iosTreeToUiElements: (tree: unknown) => UiElement[];
+  formatIOSUITree: (tree: unknown, indent?: number) => string;
   invalidateUiTreeCache: (platform?: string) => void;
   platformParam: typeof platformParam;
   handleTool: (name: string, args: Record<string, unknown>, depth?: number) => Promise<unknown>;
@@ -75,22 +80,26 @@ export interface ToolContext {
 
 export function createToolContext(
   handleTool: ToolContext["handleTool"],
-  options?: { turboDefault?: boolean },
+  options?: { turboDefault?: boolean; deviceManager?: DeviceManager },
 ): ToolContext {
   const turbo = options?.turboDefault ?? false;
+  // The server injects the kernel-backed DeviceManager (built from the enabled
+  // platform plugins). Falls back to the module singleton only for tests /
+  // callers that don't pass one. Without this injection the tools would route
+  // through the legacy empty adapter map and every platform call would fail.
+  const dm = options?.deviceManager ?? deviceManager;
 
-  // When turbo is enabled, create dedicated hint functions that pass turbo=true
-  // down to DeviceManager and use adaptive delays. When off, use the default
-  // non-turbo singletons for zero-overhead backward compatibility.
+  // Hints must bind to the SAME deviceManager the tools use, else hint
+  // generation and tool execution disagree on which adapters exist.
   const turboHints = turbo
-    ? createGenerateActionHints(deviceManager, { turbo: true })
-    : generateActionHints;
+    ? createGenerateActionHints(dm, { turbo: true })
+    : createGenerateActionHints(dm);
   const turboElements = turbo
-    ? createGetElementsForPlatform(deviceManager, { turbo: true })
-    : getElementsForPlatform;
+    ? createGetElementsForPlatform(dm, { turbo: true })
+    : createGetElementsForPlatform(dm);
 
   return {
-    deviceManager,
+    deviceManager: dm,
     getCachedElements,
     setCachedElements,
     lastScreenshotMap,

@@ -81,14 +81,8 @@ export const sensorLocationTool = defineTool({
           }
         }
       },
-      aurora: () => {
-        const result = ctx.deviceManager.getAuroraClient().execute([
-          "location", "set", String(lat), String(lon), String(alt),
-        ]);
-        return textResult(`GPS location set on Aurora Emulator:\n${JSON.stringify(result, null, 2)}`);
-      },
       unsupported: (p) =>
-        textResult(`sensor_location is not supported on platform: ${p}. Supported: android, ios, aurora.`),
+        textResult(`sensor_location is not supported on platform: ${p}. Supported: android, ios.`),
     });
   },
 });

@@ -1,7 +1,7 @@
 {
-  "name": "@claude-in-mobile/plugin-android",
-  "version": "3.14.0",
-  "description": "Android plugin shim for claude-in-mobile microkernel (third-party consumption).",
+  "name": "@mcp-devices/plugin-android",
+  "version": "4.4.1",
+  "description": "Android (ADB) platform plugin for mcp-devices.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,17 +14,33 @@
   "scripts": {
     "build": "tsc"
   },
-  "keywords": ["mcp", "claude-in-mobile", "plugin", "android", "adb"],
+  "keywords": [
+    "mcp",
+    "mcp-devices",
+    "plugin",
+    "android",
+    "adb"
+  ],
   "author": "Alex Gladkov",
   "license": "MIT",
-  "engines": { "node": ">=18.0.0" },
-  "files": ["dist"],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
-    "@claude-in-mobile/plugin-api": "1.0.0",
-    "claude-in-mobile": "*"
+    "@mcp-devices/plugin-api": "1.0.0",
+    "mcp-devices": "*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexGladkov/claude-in-mobile.git",
+    "directory": "packages/plugin-android"
   }
 }

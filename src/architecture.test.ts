@@ -51,10 +51,53 @@ function loadAll(): FileImport[] {
   }));
 }
 
-const PLATFORM_DIRS = ["adapters/", "adb/", "ios/", "desktop/", "browser/", "aurora/"];
+const PACKAGES = new URL("../packages/", import.meta.url).pathname;
+const PLUGIN_PKGS = ["android", "ios", "web", "desktop", "aurora", "harmony"] as const;
+
+/** Source files of each extracted platform package, tagged with their package. */
+function loadPluginPackages(): Array<FileImport & { pkg: string }> {
+  const out: Array<FileImport & { pkg: string }> = [];
+  for (const p of PLUGIN_PKGS) {
+    const dir = join(PACKAGES, `plugin-${p}`, "src");
+    for (const f of walk(dir)) {
+      out.push({ pkg: p, file: relative(dir, f), imports: extractImports(f) });
+    }
+  }
+  return out;
+}
+
+// aurora/ moved to @mcp-devices/plugin-aurora (4.0.0 physical split).
+const PLATFORM_DIRS = ["adapters/", "ios/"];
 
 describe("architecture", () => {
   const all = loadAll();
+
+  it("plugin packages must not import each other", () => {
+    const all = loadPluginPackages();
+    const violations = all.flatMap((f) =>
+      f.imports
+        .filter((imp) =>
+          PLUGIN_PKGS.filter((o) => o !== f.pkg).some((o) =>
+            imp.includes(`@mcp-devices/plugin-${o}`)
+          )
+        )
+        .map((imp) => `plugin-${f.pkg}/${f.file} → ${imp}`)
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it("base (src/**) must not import the extracted platform packages", () => {
+    // 4.0.0 physical split: platforms live in @mcp-devices/plugin-*,
+    // loaded only by dynamic import in bootstrap. Any STATIC import of a
+    // platform package from base would re-bundle it and break the slim base.
+    const violations = all
+      .flatMap((f) =>
+        f.imports
+          .filter((imp) => /@mcp-devices\/plugin-(android|ios|web|desktop|aurora|harmony|all)/.test(imp))
+          .map((imp) => `${f.file} → ${imp}`)
+      );
+    expect(violations).toEqual([]);
+  });
 
   it("kernel/** must not import from plugins/**", () => {
     const violations = all

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { detectClient, getConfigSnippet, type ClientType } from "./client-adapter.js";
+import { detectClient, getConfigSnippet } from "./client-adapter.js";
+import type { ClientType } from "./client-adapter.js";
+import { INIT_CLIENTS } from "./runtime/cli.js";
 
 describe("detectClient", () => {
   it("should detect claude-code from clientInfo name", () => {
@@ -22,6 +24,29 @@ describe("detectClient", () => {
   it("should detect cursor", () => {
     const adapter = detectClient({ name: "cursor", version: "1.5.0" });
     expect(adapter.clientType).toBe("cursor");
+  });
+
+  it("should detect grok", () => {
+    const adapter = detectClient({ name: "grok", version: "1.0.0" });
+    expect(adapter.clientType).toBe("grok");
+    expect(adapter.clientName).toBe("grok");
+  });
+
+  it("should detect grok from Grok Build", () => {
+    const adapter = detectClient({ name: "Grok Build", version: "2.0.0" });
+    expect(adapter.clientType).toBe("grok");
+  });
+
+  it("matches the first CLIENT_MATCHERS entry when a name contains several markers", () => {
+    // CLIENT_MATCHERS is order-sensitive and uses .find() (first match wins).
+    // Real order in client-adapter.ts: claude → opencode → cursor → grok.
+    // So a name carrying both "claude" and "grok" resolves to claude-code,
+    // because the claude matcher comes first. This test pins that precedence;
+    // the matchers are substring regexes (/grok/i etc.), so overlapping names
+    // are decided purely by matcher order, not specificity — documented here so
+    // a future reorder of CLIENT_MATCHERS surfaces as a failing test.
+    const adapter = detectClient({ name: "claude-grok", version: "1.0.0" });
+    expect(adapter.clientType).toBe("claude-code");
   });
 
   it("should return unknown for unrecognized clients", () => {
@@ -58,6 +83,12 @@ describe("getAdditionalAliases", () => {
     expect(Object.keys(aliases).length).toBe(0);
   });
 
+  it("should return empty aliases for grok", () => {
+    const adapter = detectClient({ name: "grok", version: "1.0.0" });
+    const aliases = adapter.getAdditionalAliases();
+    expect(Object.keys(aliases).length).toBe(0);
+  });
+
   it("should return empty aliases for unknown clients", () => {
     const adapter = detectClient(undefined);
     const aliases = adapter.getAdditionalAliases();
@@ -75,6 +106,12 @@ describe("getAliasesWithDefaults", () => {
 
   it("should return empty for claude-code", () => {
     const adapter = detectClient({ name: "claude-code", version: "1.0.0" });
+    const aliases = adapter.getAliasesWithDefaults();
+    expect(Object.keys(aliases).length).toBe(0);
+  });
+
+  it("should return empty for grok", () => {
+    const adapter = detectClient({ name: "grok", version: "1.0.0" });
     const aliases = adapter.getAliasesWithDefaults();
     expect(Object.keys(aliases).length).toBe(0);
   });
@@ -99,6 +136,12 @@ describe("getInstructions", () => {
     const adapter = detectClient({ name: "claude-code", version: "1.0.0" });
     expect(adapter.getInstructions().length).toBeGreaterThan(0);
   });
+
+  it("should return the same instructions for grok as claude-code", () => {
+    const grok = detectClient({ name: "grok", version: "1.0.0" });
+    const claude = detectClient({ name: "claude-code", version: "1.0.0" });
+    expect(grok.getInstructions()).toBe(claude.getInstructions());
+  });
 });
 
 describe("getConfigSnippet", () => {
@@ -106,7 +149,7 @@ describe("getConfigSnippet", () => {
     const config = getConfigSnippet("opencode");
     const parsed = JSON.parse(config);
     expect(parsed.mcp.mobile.type).toBe("local");
-    expect(parsed.mcp.mobile.command).toEqual(["npx", "-y", "claude-in-mobile"]);
+    expect(parsed.mcp.mobile.command).toEqual(["npx", "-y", "mcp-devices"]);
     expect(parsed.mcp.mobile.enabled).toBe(true);
   });
 
@@ -114,17 +157,32 @@ describe("getConfigSnippet", () => {
     const config = getConfigSnippet("cursor");
     const parsed = JSON.parse(config);
     expect(parsed.mcpServers.mobile.command).toBe("npx");
-    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "claude-in-mobile"]);
+    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "mcp-devices"]);
   });
 
   it("should generate valid claude-code config", () => {
     const config = getConfigSnippet("claude-code");
     const parsed = JSON.parse(config);
     expect(parsed.mcpServers.mobile.command).toBe("npx");
-    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "claude-in-mobile"]);
+    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "mcp-devices"]);
+  });
+
+  it("should generate valid grok config", () => {
+    const config = getConfigSnippet("grok");
+    const parsed = JSON.parse(config);
+    expect(parsed.mcpServers.mobile.command).toBe("npx");
+    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "mcp-devices"]);
   });
 
   it("should throw for unsupported client", () => {
     expect(() => getConfigSnippet("nonexistent" as ClientType)).toThrow();
+  });
+
+  it("lists grok in INIT_CLIENTS and every listed client has a config snippet", () => {
+    expect(INIT_CLIENTS).toContain("grok");
+    expect(INIT_CLIENTS).toContain("claude-code");
+    for (const client of INIT_CLIENTS) {
+      expect(() => getConfigSnippet(client)).not.toThrow();
+    }
   });
 });

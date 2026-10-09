@@ -5,17 +5,61 @@
 //! polls `state.buffer` from the consumer side. We deliberately avoid tokio:
 //! REPL sessions are few, latency tolerances are in milliseconds, and a
 //! blocking thread per session keeps the dependency graph small.
+//!
+//! # Reader thread ordering (STRICT — do not reorder)
+//!
+//! 1. `redaction::redact(&chunk_str)` — OUTSIDE the mutex
+//! 2. Asciicast write (`redacted` payload) — OUTSIDE the mutex via local BufWriter
+//! 3. Acquire `SessionState` lock:
+//!    a. `vt.process(&raw_bytes)`
+//!    b. capture filmstrip frame AFTER vt.process
+//!    c. `raw.push_str(&redacted)` + cap drain
+//!    d. update status / last_activity
 
-use std::io::Write;
+use std::collections::VecDeque;
+use std::io::{BufWriter, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::utils::private_state::state_dir;
 use anyhow::{anyhow, bail, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 
 use super::expect::{ExpectOutcome, ExpectRules};
+use super::redaction;
+
+/// Called once by the reader thread after it has marked the generation dead.
+pub(crate) type ExitCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// `portable-pty` uses a fork/exec handshake on Unix that is not safe to run
+/// concurrently: overlapping handshakes can exchange malformed child errors.
+/// Keep the narrow process-creation section serialized; sessions run
+/// concurrently after `spawn_command` returns.
+static PTY_SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+/// Maximum number of filmstrip frames retained per session.
+pub const FILMSTRIP_CAP: usize = 50;
+/// Maximum total UTF-8 bytes retained by the filmstrip grids.
+pub const FILMSTRIP_CAP_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum bytes retained in `SessionState.raw`. Older bytes are drained from
+/// the front when this limit is exceeded.
+pub const RAW_BUFFER_CAP_BYTES: usize = 256 * 1024;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -26,42 +70,129 @@ pub enum SessionStatus {
     Dead,
 }
 
+/// A single filmstrip frame — the post-`vt.process` screen grid at a moment in
+/// time. Captured only in the reader thread, never in send/key dispatch.
+pub struct FilmstripFrame {
+    pub captured_at: SystemTime,
+    pub grid: String,
+}
+
 pub struct SessionState {
-    /// Raw bytes-as-utf8 accumulator. Cleared only via `take_tail()` / reset.
+    /// Redacted PTY byte stream, capped at [`RAW_BUFFER_CAP_BYTES`]. Older
+    /// bytes are drained from the front when the cap is exceeded.
     pub raw: String,
     /// vt100 grid emulator — produces canonical screen text.
     pub vt: vt100::Parser,
     pub status: SessionStatus,
     pub exit_code: Option<i32>,
     pub last_activity: Instant,
+    /// PTY width — single source of truth (updated on resize).
+    pub cols: u16,
+    /// PTY height — single source of truth (updated on resize).
+    pub rows: u16,
+    /// Bounded ring-buffer of post-render grid captures.
+    pub filmstrip: VecDeque<FilmstripFrame>,
+    /// Total UTF-8 bytes occupied by [`filmstrip`] grids.
+    pub filmstrip_bytes: usize,
 }
 
 impl SessionState {
-    fn new(cols: u16, rows: u16) -> Self {
+    pub fn new(cols: u16, rows: u16) -> Self {
         Self {
             raw: String::new(),
             vt: vt100::Parser::new(rows, cols, 1000),
             status: SessionStatus::Starting,
             exit_code: None,
             last_activity: Instant::now(),
+            cols,
+            rows,
+            filmstrip: VecDeque::new(),
+            filmstrip_bytes: 0,
         }
     }
 
     pub fn screen_text(&self) -> String {
         self.vt.screen().contents()
     }
+
+    /// Append a complete rendered frame, evicting the oldest complete frames
+    /// until both filmstrip limits are satisfied.
+    pub fn push_filmstrip(&mut self, frame: FilmstripFrame) {
+        self.filmstrip_bytes = self.filmstrip_bytes.saturating_add(frame.grid.len());
+        self.filmstrip.push_back(frame);
+        while self.filmstrip.len() > FILMSTRIP_CAP || self.filmstrip_bytes > FILMSTRIP_CAP_BYTES {
+            let Some(oldest) = self.filmstrip.pop_front() else {
+                self.filmstrip_bytes = 0;
+                break;
+            };
+            self.filmstrip_bytes = self.filmstrip_bytes.saturating_sub(oldest.grid.len());
+        }
+    }
 }
 
-pub struct PtySession {
-    pub id: String,
-    pub cmd: String,
-    state: Arc<Mutex<SessionState>>,
-    writer: Box<dyn Write + Send>,
-    _master: Box<dyn MasterPty + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    cols: u16,
-    rows: u16,
+// ---------------------------------------------------------------------------
+// Asciicast writer helpers
+// ---------------------------------------------------------------------------
+
+/// Write an asciicast v2 header to `w`. No `env` or `title` fields — they
+/// can carry secrets.
+fn write_cast_header(w: &mut impl Write, cols: u16, rows: u16) -> Result<()> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let header =
+        format!("{{\"version\":2,\"width\":{cols},\"height\":{rows},\"timestamp\":{timestamp}}}\n");
+    w.write_all(header.as_bytes())
+        .context("write asciicast header")?;
+    Ok(())
 }
+
+/// Write one asciicast v2 event line.
+fn write_cast_event(w: &mut impl Write, elapsed_secs: f64, data: &str) -> std::io::Result<()> {
+    // Escape the data string as JSON.
+    let json_data = serde_json::to_string(data).unwrap_or_else(|_| "\"[REDACTED]\"".to_string());
+    let line = format!("[{elapsed_secs:.6},\"o\",{json_data}]\n");
+    w.write_all(line.as_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// castPath validation
+// ---------------------------------------------------------------------------
+
+/// Validate and open a `.cast` file path, confining it to the system temp
+/// directory or the private per-user REPL cast directory.
+fn open_cast_file(path: &PathBuf) -> Result<std::fs::File> {
+    let temp_base = {
+        let temp = std::env::temp_dir();
+        temp.canonicalize().unwrap_or(temp)
+    };
+    let state_base = state_dir("repl-casts")?
+        .canonicalize()
+        .context("canonicalize private REPL cast directory")?;
+    let parent = path.parent().unwrap_or(path);
+    let canonical_parent = parent
+        .canonicalize()
+        .with_context(|| format!("canonicalize parent of {}", path.display()))?;
+
+    if !canonical_parent.starts_with(&temp_base) && !canonical_parent.starts_with(&state_base) {
+        bail!(
+            "castPath '{}' is outside an allowed private directory",
+            path.display(),
+        );
+    }
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("open cast file {}", path.display()))
+}
+
+// ---------------------------------------------------------------------------
+// Spawn options / PtySession
+// ---------------------------------------------------------------------------
 
 pub struct SpawnOptions<'a> {
     pub id: String,
@@ -74,10 +205,56 @@ pub struct SpawnOptions<'a> {
     /// prefixes, redirections, pipes, globs) is honoured. When false (default),
     /// `cmd` is argv-split and exec'd directly — no shell, no injection surface.
     pub shell: bool,
+    /// When `Some`, tee redacted PTY output to this path as asciicast v2.
+    pub cast_path: Option<PathBuf>,
+}
+
+pub struct PtySession {
+    pub id: String,
+    pub cmd: String,
+    state: Arc<Mutex<SessionState>>,
+    writer: Box<dyn Write + Send>,
+    master: Box<dyn MasterPty + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    #[cfg(unix)]
+    process_group_leader: Option<i32>,
+    terminated: bool,
+    /// Path to the `.cast` file if recording is active; used for best-effort
+    /// removal on kill/Drop.
+    cast_path: Option<PathBuf>,
 }
 
 impl PtySession {
     pub fn spawn(opts: SpawnOptions<'_>) -> Result<Self> {
+        Self::spawn_inner(opts, Arc::new(AtomicBool::new(false)), None)
+    }
+
+    /// Spawn a session whose reader reports its natural exit to the supervisor.
+    ///
+    /// The generation flag is set by the reader before it acquires the state
+    /// mutex. This ordering lets a fast-exiting process race safely with the
+    /// supervisor's insertion of the newly-created handle.
+    pub(crate) fn spawn_with_lifecycle(
+        opts: SpawnOptions<'_>,
+        generation_exited: Arc<AtomicBool>,
+        on_exit: Option<ExitCallback>,
+    ) -> Result<Self> {
+        Self::spawn_inner(opts, generation_exited, on_exit)
+    }
+
+    fn spawn_inner(
+        opts: SpawnOptions<'_>,
+        generation_exited: Arc<AtomicBool>,
+        on_exit: Option<ExitCallback>,
+    ) -> Result<Self> {
+        // Validate cast_path BEFORE opening any PTY (fail fast, no side effects).
+        let cast_file_opt: Option<(PathBuf, std::fs::File)> = if let Some(ref p) = opts.cast_path {
+            let f = open_cast_file(p)?;
+            Some((p.clone(), f))
+        } else {
+            None
+        };
+
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
@@ -89,13 +266,11 @@ impl PtySession {
             .context("openpty failed")?;
 
         let (program, args) = if opts.shell {
-            // Delegate to a real shell — the only correct way to honour shell
-            // syntax. We never reimplement shell parsing.
-            ("/bin/sh".to_string(), vec!["-c".to_string(), opts.cmd.to_string()])
+            (
+                "/bin/sh".to_string(),
+                vec!["-c".to_string(), opts.cmd.to_string()],
+            )
         } else {
-            // Direct exec. If the caller pasted shell syntax (the common
-            // mistake — see issue #46) we'd otherwise spawn a doomed session
-            // with a nonsense program name. Fail loud with guidance instead.
             if let Some(meta) = detect_shell_syntax(opts.cmd) {
                 bail!(
                     "cmd contains shell syntax ({meta}) but repl_spawn execs \
@@ -112,8 +287,6 @@ impl PtySession {
         if let Some(cwd) = opts.cwd {
             builder.cwd(cwd);
         }
-        // Minimal env — caller passes an explicit allowlist. We add TERM and
-        // FORCE_COLOR so REPLs render predictably.
         builder.env_clear();
         builder.env("TERM", "xterm-256color");
         builder.env("FORCE_COLOR", "1");
@@ -121,35 +294,99 @@ impl PtySession {
             builder.env(k, v);
         }
 
-        let child = pair
-            .slave
-            .spawn_command(builder)
-            .context("spawn_command failed")?;
+        let child = {
+            let _spawn_guard = PTY_SPAWN_LOCK
+                .lock()
+                .map_err(|_| anyhow!("PTY spawn lock poisoned"))?;
+            pair.slave
+                .spawn_command(builder)
+                .context("spawn_command failed")?
+        };
+
+        // portable-pty's Unix backend establishes a fresh session with
+        // setsid() in its pre-exec hook. Capture the foreground process group
+        // while the master is still alive so teardown can also terminate
+        // descendants that inherited the PTY.
+        #[cfg(unix)]
+        let process_group_leader = pair.master.process_group_leader().map(|pid| pid as i32);
 
         let mut reader = pair
             .master
             .try_clone_reader()
             .context("try_clone_reader failed")?;
-        let writer = pair
-            .master
-            .take_writer()
-            .context("take_writer failed")?;
+        let writer = pair.master.take_writer().context("take_writer failed")?;
 
         let state = Arc::new(Mutex::new(SessionState::new(opts.cols, opts.rows)));
+        let cast_path_for_drop = opts.cast_path.clone();
 
         // Reader thread — owns the PTY reader for the lifetime of the session.
         let reader_state = Arc::clone(&state);
+        let generation_exited_for_reader = Arc::clone(&generation_exited);
+        let cols = opts.cols;
+        let rows = opts.rows;
+
         thread::Builder::new()
             .name(format!("repl-reader-{}", opts.id))
             .spawn(move || {
+                // Set up local BufWriter for asciicast — OUTSIDE the mutex.
+                let spawn_instant = Instant::now();
+                let mut cast_writer: Option<BufWriter<std::fs::File>> =
+                    cast_file_opt.map(|(_, f)| {
+                        let mut bw = BufWriter::new(f);
+                        // Write header immediately. Ignore errors — we do
+                        // best-effort and never panic the reader thread.
+                        let _ = write_cast_header(&mut bw, cols, rows);
+                        let _ = bw.flush();
+                        bw
+                    });
+
                 let mut buf = [0u8; 4096];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
+                            let raw_bytes = &buf[..n];
+                            let chunk_str = String::from_utf8_lossy(raw_bytes);
+
+                            // Step 1: redact OUTSIDE mutex.
+                            let redacted = redaction::redact(&chunk_str);
+
+                            // Step 2: write to asciicast OUTSIDE mutex.
+                            if let Some(ref mut cw) = cast_writer {
+                                let elapsed = spawn_instant.elapsed().as_secs_f64();
+                                let _ = write_cast_event(cw, elapsed, &redacted);
+                                // Don't flush every chunk — BufWriter batches.
+                            }
+
+                            // Step 3: lock, then update vt/filmstrip/raw.
                             let mut s = reader_state.lock().expect("session state poisoned");
-                            s.vt.process(&buf[..n]);
-                            s.raw.push_str(&String::from_utf8_lossy(&buf[..n]));
+
+                            // 3a. Process raw bytes through vt100.
+                            s.vt.process(raw_bytes);
+
+                            // 3b. Capture a complete frame AFTER vt.process.
+                            let grid = s.vt.screen().contents();
+                            s.push_filmstrip(FilmstripFrame {
+                                captured_at: SystemTime::now(),
+                                grid,
+                            });
+
+                            // 3c. Append redacted bytes to raw buffer + cap drain.
+                            s.raw.push_str(&redacted);
+                            if s.raw.len() > RAW_BUFFER_CAP_BYTES {
+                                let excess = s.raw.len() - RAW_BUFFER_CAP_BYTES;
+                                // Drain from the front.  We must find a char
+                                // boundary to avoid splitting UTF-8.
+                                let drain_at = s
+                                    .raw
+                                    .char_indices()
+                                    .map(|(i, _)| i)
+                                    .find(|&i| i >= excess)
+                                    .unwrap_or(s.raw.len());
+                                s.raw.drain(..drain_at);
+                            }
+
+                            // 3d. Update status / activity.
                             s.last_activity = Instant::now();
                             if s.status == SessionStatus::Starting {
                                 s.status = SessionStatus::Ready;
@@ -158,8 +395,28 @@ impl PtySession {
                         Err(_) => break,
                     }
                 }
-                let mut s = reader_state.lock().expect("session state poisoned");
-                s.status = SessionStatus::Dead;
+
+                // Mark the generation before taking the state lock. The
+                // supervisor can therefore detect a fast exit even when this
+                // reader reaches EOF before spawn() inserts its handle.
+                generation_exited_for_reader.store(true, Ordering::Release);
+
+                // EOF — flush/close the cast writer cleanly.
+                if let Some(mut cw) = cast_writer {
+                    let _ = cw.flush();
+                }
+
+                {
+                    let mut s = reader_state.lock().expect("session state poisoned");
+                    s.status = SessionStatus::Dead;
+                }
+
+                // The callback only upgrades a Weak supervisor reference and
+                // removes a matching generation. It never owns the session
+                // lock, avoiding lock inversion with kill/expect.
+                if let Some(callback) = on_exit {
+                    callback();
+                }
             })
             .context("spawn reader thread failed")?;
 
@@ -168,18 +425,13 @@ impl PtySession {
             cmd: opts.cmd.into(),
             state,
             writer,
-            _master: pair.master,
+            master: pair.master,
             child,
-            cols: opts.cols,
-            rows: opts.rows,
+            #[cfg(unix)]
+            process_group_leader,
+            terminated: false,
+            cast_path: cast_path_for_drop,
         })
-    }
-
-    pub fn cols(&self) -> u16 {
-        self.cols
-    }
-    pub fn rows(&self) -> u16 {
-        self.rows
     }
 
     /// Clone of the shared session state. Lets the supervisor read
@@ -204,10 +456,6 @@ impl PtySession {
     }
 
     pub fn write_line(&mut self, line: &str) -> Result<()> {
-        // Terminate with CR (`\r`) — works for both cooked-mode REPLs (where
-        // the line discipline translates it to NL) and raw-mode TUIs (curses,
-        // readline) that bind Enter to `\r`. Sending `\n` directly fails for
-        // raw-mode consumers and prints `^J` instead of submitting.
         let mut payload = line.as_bytes().to_vec();
         payload.push(b'\r');
         self.write_bytes(&payload)
@@ -269,42 +517,89 @@ impl PtySession {
     }
 
     pub fn raw_buffer(&self) -> String {
-        self.state.lock().expect("session state poisoned").raw.clone()
-    }
-
-    pub fn kill(&mut self) -> Result<()> {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let mut s = self.state.lock().expect("session state poisoned");
-        s.status = SessionStatus::Dead;
-        Ok(())
-    }
-
-    pub fn exit_code(&self) -> Option<i32> {
         self.state
             .lock()
             .expect("session state poisoned")
-            .exit_code
+            .raw
+            .clone()
+    }
+
+    pub fn kill(&mut self) -> Result<()> {
+        self.terminate();
+        {
+            let mut s = self.state.lock().expect("session state poisoned");
+            s.status = SessionStatus::Dead;
+        }
+        if let Some(p) = &self.cast_path {
+            let _ = std::fs::remove_file(p);
+        }
+        Ok(())
+    }
+
+    fn terminate(&mut self) {
+        if self.terminated {
+            return;
+        }
+        self.terminated = true;
+        #[cfg(unix)]
+        if let Some(group) = self.process_group_leader.filter(|pid| *pid > 1) {
+            let _ = Command::new("/bin/kill")
+                .args(["-TERM", "--", &format!("-{group}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        #[cfg(unix)]
+        if let Some(group) = self.process_group_leader.filter(|pid| *pid > 1) {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", "--", &format!("-{group}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+
+    pub fn exit_code(&self) -> Option<i32> {
+        self.state.lock().expect("session state poisoned").exit_code
+    }
+
+    /// Resize the PTY master then update vt100 and SessionState.
+    /// Order is STRICT: PTY first, then vt100/state under lock.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+        // Step 1: resize the PTY master FIRST.
+        self.master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("pty resize failed")?;
+
+        // Step 2: update vt100 parser and SessionState under lock.
+        let mut s = self.state.lock().expect("session state poisoned");
+        s.vt.set_size(rows, cols);
+        s.cols = cols;
+        s.rows = rows;
+
+        Ok(())
     }
 }
 
 impl Drop for PtySession {
     fn drop(&mut self) {
-        // Best-effort cleanup. Reader thread exits naturally when the PTY
-        // master closes via `_master` Drop.
-        let _ = self.child.kill();
+        self.terminate();
+        if let Some(p) = &self.cast_path {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }
 
 /// Detect shell syntax that direct exec (no shell) cannot honour, so spawn can
-/// fail with guidance instead of producing a silently-dead session. Quote-aware
-/// — metacharacters inside single/double quotes are treated as literal, so a
-/// quoted URL like `"http://h/db?a=1&b=2"` is not flagged. High-confidence
-/// operators only (`| ; < > $( ` backtick `) plus a leading `VAR=value`
-/// prefix); a lone `&` is intentionally not flagged because `2>&1` is already
-/// caught by `>` and bare `&` collides with literal `&` in unquoted args.
+/// fail with guidance instead of producing a silently-dead session.
 fn detect_shell_syntax(cmd: &str) -> Option<String> {
-    // 1. Leading `VAR=value` env-assignment prefix (e.g. `JAVA_HOME=/x cmd`).
     let trimmed = cmd.trim_start();
     if let Some(eq) = trimmed.find('=') {
         let name = &trimmed[..eq];
@@ -318,7 +613,6 @@ fn detect_shell_syntax(cmd: &str) -> Option<String> {
             return Some(format!("env-assignment prefix `{name}=`"));
         }
     }
-    // 2. Unquoted shell metacharacters.
     let mut in_single = false;
     let mut in_double = false;
     let mut escape = false;
@@ -335,9 +629,6 @@ fn detect_shell_syntax(cmd: &str) -> Option<String> {
             '|' | ';' | '<' | '>' | '`' if !in_single && !in_double => {
                 return Some(format!("`{ch}`"));
             }
-            // `&&` is unambiguous shell; a lone `&` is left unflagged because it
-            // collides with literal `&` in unquoted args (and `2>&1` is already
-            // caught by `>`).
             '&' if !in_single && !in_double && chars.peek() == Some(&'&') => {
                 return Some("`&&`".to_string());
             }
@@ -351,7 +642,6 @@ fn detect_shell_syntax(cmd: &str) -> Option<String> {
 }
 
 fn parse_cmd(cmd: &str) -> Result<(String, Vec<String>)> {
-    // Minimal shlex-style splitter: whitespace + single/double quotes.
     let mut parts: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut in_single = false;
@@ -425,7 +715,7 @@ mod tests {
         assert!(detect_shell_syntax("gradlew installDebug 2>&1").is_some());
         assert!(detect_shell_syntax("cat foo | grep bar").is_some());
         assert!(detect_shell_syntax("echo hi > out.txt").is_some());
-        assert!(detect_shell_syntax("a && b").is_some()); // `&&` flagged; lone `&` is not
+        assert!(detect_shell_syntax("a && b").is_some());
         assert!(detect_shell_syntax("a; b").is_some());
         assert!(detect_shell_syntax("echo $(date)").is_some());
         assert!(detect_shell_syntax("echo `date`").is_some());
@@ -433,12 +723,9 @@ mod tests {
 
     #[test]
     fn ignores_quoted_metacharacters() {
-        // A quoted URL with `&`/`?` must not be flagged.
         assert!(detect_shell_syntax(r#"psql "postgres://h/db?a=1&b=2""#).is_none());
         assert!(detect_shell_syntax(r#"python -c "print(1)""#).is_none());
-        // `--flag=value` is not an env-assignment prefix.
         assert!(detect_shell_syntax("gradlew --foo=bar").is_none());
-        // Plain argv is clean.
         assert!(detect_shell_syntax("python3 -i").is_none());
         assert!(detect_shell_syntax("bash --norc --noprofile").is_none());
     }
@@ -449,16 +736,21 @@ mod tests {
             id: "sh1".into(),
             cmd: "echo hello 2>&1",
             cwd: None,
-            env: &[("PATH".into(), std::env::var("PATH").unwrap_or_default())],
+            env: &[("PATH".into(), "/usr/bin:/bin".into())],
             cols: 80,
             rows: 24,
             shell: true,
+            cast_path: None,
         };
         let mut s = PtySession::spawn(opts).expect("shell spawn failed");
         let rules = ExpectRules::new(None, 100, 2_000);
         let _ = s.wait_ready(&rules);
         std::thread::sleep(Duration::from_millis(150));
-        assert!(s.snapshot_text().contains("hello"), "screen: {}", s.snapshot_text());
+        assert!(
+            s.snapshot_text().contains("hello"),
+            "screen: {}",
+            s.snapshot_text()
+        );
         let _ = s.kill();
     }
 
@@ -472,12 +764,79 @@ mod tests {
             cols: 80,
             rows: 24,
             shell: false,
+            cast_path: None,
         };
         let err = match PtySession::spawn(opts) {
             Ok(_) => panic!("expected shell-syntax rejection"),
             Err(e) => e.to_string(),
         };
         assert!(err.contains("shell"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn session_state_cols_rows_initialized() {
+        let s = SessionState::new(100, 30);
+        assert_eq!(s.cols, 100);
+        assert_eq!(s.rows, 30);
+    }
+
+    #[test]
+    fn raw_buffer_cap_drain() {
+        let mut s = SessionState::new(80, 24);
+        // Fill beyond cap.
+        let chunk = "x".repeat(1024);
+        while s.raw.len() <= RAW_BUFFER_CAP_BYTES + chunk.len() {
+            s.raw.push_str(&chunk);
+        }
+        // Simulate cap drain.
+        if s.raw.len() > RAW_BUFFER_CAP_BYTES {
+            let excess = s.raw.len() - RAW_BUFFER_CAP_BYTES;
+            let drain_at = s
+                .raw
+                .char_indices()
+                .map(|(i, _)| i)
+                .filter(|&i| i >= excess)
+                .next()
+                .unwrap_or(s.raw.len());
+            s.raw.drain(..drain_at);
+        }
+        assert!(s.raw.len() <= RAW_BUFFER_CAP_BYTES);
+    }
+
+    #[test]
+    fn filmstrip_respects_frame_and_byte_caps() {
+        let mut state = SessionState::new(80, 24);
+        for index in 0..(FILMSTRIP_CAP + 10) {
+            state.push_filmstrip(FilmstripFrame {
+                captured_at: SystemTime::now(),
+                grid: format!("frame {index}"),
+            });
+        }
+        assert_eq!(state.filmstrip.len(), FILMSTRIP_CAP);
+        assert_eq!(state.filmstrip.front().unwrap().grid, "frame 10");
+
+        for _ in 0..5 {
+            state.push_filmstrip(FilmstripFrame {
+                captured_at: SystemTime::now(),
+                grid: "x".repeat(1024 * 1024),
+            });
+        }
+        assert!(state.filmstrip_bytes <= FILMSTRIP_CAP_BYTES);
+        assert_eq!(
+            state.filmstrip_bytes,
+            state
+                .filmstrip
+                .iter()
+                .map(|frame| frame.grid.len())
+                .sum::<usize>(),
+        );
+
+        state.push_filmstrip(FilmstripFrame {
+            captured_at: SystemTime::now(),
+            grid: "x".repeat(FILMSTRIP_CAP_BYTES + 1),
+        });
+        assert!(state.filmstrip.is_empty());
+        assert_eq!(state.filmstrip_bytes, 0);
     }
 
     use super::ExpectRules;

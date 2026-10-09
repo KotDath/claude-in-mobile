@@ -1,10 +1,11 @@
 {
-  "name": "claude-in-mobile",
-  "version": "3.14.0",
-  "description": "MCP server for mobile, desktop and browser automation - Android (ADB), iOS Simulator (simctl), Desktop (Compose), Browser (CDP)",
+  "name": "mcp-devices",
+  "version": "4.4.1",
+  "description": "MCP server for mobile, desktop and browser automation — Android, iOS, HarmonyOS Next, Aurora OS, Desktop, and Browser",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
+    "mcp-devices": "dist/index.js",
     "claude-in-mobile": "dist/index.js"
   },
   "workspaces": [
@@ -18,6 +19,10 @@
     "./device-manager": {
       "types": "./dist/device-manager.d.ts",
       "default": "./dist/device-manager.js"
+    },
+    "./runtime/bootstrap": {
+      "types": "./dist/runtime/bootstrap.d.ts",
+      "default": "./dist/runtime/bootstrap.js"
     },
     "./errors": {
       "types": "./dist/errors.d.ts",
@@ -34,10 +39,6 @@
     "./ios/*": {
       "types": "./dist/ios/*.d.ts",
       "default": "./dist/ios/*.js"
-    },
-    "./aurora/*": {
-      "types": "./dist/aurora/*.d.ts",
-      "default": "./dist/aurora/*.js"
     },
     "./desktop/*": {
       "types": "./dist/desktop/*.d.ts",
@@ -62,12 +63,20 @@
     "./plugins/*": {
       "types": "./dist/plugins/*/index.d.ts",
       "default": "./dist/plugins/*/index.js"
+    },
+    "./constants/*": {
+      "types": "./dist/constants/*.d.ts",
+      "default": "./dist/constants/*.js"
+    },
+    "./ui-tree/*": {
+      "types": "./dist/ui-tree/*.d.ts",
+      "default": "./dist/ui-tree/*.js"
     }
   },
   "scripts": {
-    "build": "npm run build --workspace=packages/plugin-api && tsc && npm run build --workspaces --if-present --workspace=packages/plugin-android --workspace=packages/plugin-ios --workspace=packages/plugin-desktop --workspace=packages/plugin-web --workspace=packages/plugin-aurora",
+    "build": "npm run build --workspace=packages/plugin-api && tsc && npm run build --workspaces --if-present --workspace=packages/plugin-android --workspace=packages/plugin-ios --workspace=packages/plugin-desktop --workspace=packages/plugin-web --workspace=packages/plugin-aurora --workspace=packages/plugin-harmony --workspace=packages/plugin-debug",
     "build:lite": "npm run build && npm run build --workspace=packages/lite",
-    "postinstall": "rm -rf node_modules/claude-in-mobile && ln -sf \"$(pwd)\" node_modules/claude-in-mobile 2>/dev/null || true",
+    "prebuild": "rm -rf node_modules/mcp-devices && ln -sf \"$(pwd)\" node_modules/mcp-devices 2>/dev/null || true",
     "build:desktop": "cd desktop-companion && ./gradlew installDist",
     "build:all": "npm run build && npm run build:desktop",
     "watch": "tsc --watch",
@@ -83,6 +92,9 @@
     "ios",
     "desktop",
     "browser",
+    "harmonyos",
+    "openharmony",
+    "hdc",
     "compose",
     "adb",
     "simctl",
@@ -103,7 +115,7 @@
   },
   "homepage": "https://github.com/AlexGladkov/claude-in-mobile#readme",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "files": [
     "dist",
@@ -111,7 +123,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@claude-in-mobile/plugin-api": "1.0.0",
+    "@mcp-devices/plugin-api": "1.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "chrome-launcher": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
@@ -120,17 +132,18 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "sharp": "^0.33.0"
+    "sharp": "^0.35.3"
   },
   "bundledDependencies": [
-    "@claude-in-mobile/plugin-api"
+    "@mcp-devices/plugin-api"
   ],
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
   },
-  "bundleDependencies": [
-    "@claude-in-mobile/plugin-api"
-  ]
+  "overrides": {
+    "sharp": "^0.35.3",
+    "ip-address": "^10.5.0"
+  }
 }

@@ -1,0 +1,331 @@
+/**
+ * Gradle task detection and launcher for Compose Desktop projects
+ */
+
+import { execFileSync, spawn, ChildProcess } from "child_process";
+import * as path from "path";
+import * as fs from "fs";
+import type { GradleProject, RawLaunchOptions } from "./types.js";
+import { whichBin } from "mcp-devices/utils/which-bin";
+import { normalizeLaunchOptions } from "./launch-options.js";
+
+interface GradleInvocation {
+  command: string;
+  prefixArgs: string[];
+}
+
+// Known desktop run task patterns
+const DESKTOP_TASK_PATTERNS = [
+  ":desktopApp:run",
+  ":composeApp:desktopRun",
+  ":desktop:run",
+  ":app:desktopRun",
+  "desktopRun",
+  "runDesktop",
+];
+
+export class GradleLauncher {
+  /**
+   * Check if Gradle wrapper exists in project
+   */
+  hasGradleWrapper(projectPath: string): boolean {
+    const wrapperScript = process.platform === "win32" ? "gradlew.bat" : "gradlew";
+    const wrapperPath = path.join(projectPath, wrapperScript);
+    return fs.existsSync(wrapperPath);
+  }
+
+  /**
+   * Get Gradle executable (wrapper or system gradle)
+   */
+  private getGradleExecutable(projectPath: string): string {
+    if (this.hasGradleWrapper(projectPath)) {
+      return process.platform === "win32"
+        ? path.join(projectPath, "gradlew.bat")
+        : path.join(projectPath, "gradlew");
+    }
+    const gradle = whichBin("gradle");
+    if (!gradle) throw new Error("Gradle was not found.");
+    return gradle;
+  }
+
+  private getGradleInvocation(projectPath: string): GradleInvocation {
+    const executable = this.getGradleExecutable(projectPath);
+    if (process.platform !== "win32") {
+      return { command: executable, prefixArgs: [] };
+    }
+    if (!this.hasGradleWrapper(projectPath)) {
+      throw new Error("A Gradle wrapper is required for secure desktop launch on Windows.");
+    }
+    const javaHome = process.env.JAVA_HOME;
+    const java = javaHome
+      ? path.join(javaHome, "bin", "java.exe")
+      : whichBin("java.exe") ?? whichBin("java");
+    if (!java || !fs.existsSync(java)) {
+      throw new Error("Java was not found. Set JAVA_HOME before launching Gradle on Windows.");
+    }
+    const wrapperJar = path.join(projectPath, "gradle", "wrapper", "gradle-wrapper.jar");
+    if (!fs.existsSync(wrapperJar)) {
+      throw new Error(`Gradle wrapper JAR does not exist: ${wrapperJar}`);
+    }
+    return {
+      command: java,
+      prefixArgs: [
+        "-Dorg.gradle.appname=gradlew",
+        "-classpath",
+        wrapperJar,
+        "org.gradle.wrapper.GradleWrapperMain",
+      ],
+    };
+  }
+
+  /**
+   * Detect available desktop run tasks in the project
+   */
+  async detectDesktopTasks(projectPath: string): Promise<string[]> {
+    const invocation = this.getGradleInvocation(projectPath);
+
+    try {
+      // Run gradle tasks and parse output
+      // SECURITY: argv-form invocation (execFileSync) — no /bin/sh -c, shell metachars
+      // in `gradle` path or args are passed literally. Mirrors src/adb/client.ts fix (#40).
+      const output = execFileSync(invocation.command, [...invocation.prefixArgs, "tasks", "--all"], {
+        cwd: projectPath,
+        encoding: "utf-8",
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 60000,
+      });
+
+      const tasks: string[] = [];
+      const lines = output.split("\n");
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Look for task lines (format: "taskName - description" or just "taskName")
+        const taskMatch = trimmed.match(/^(:\S+|[a-zA-Z]\S*)\s*(-|$)/);
+        if (taskMatch) {
+          const taskName = taskMatch[1];
+          // Check if it matches known desktop patterns
+          for (const pattern of DESKTOP_TASK_PATTERNS) {
+            if (taskName.includes(pattern) ||
+                taskName.toLowerCase().includes("desktop") && taskName.toLowerCase().includes("run")) {
+              tasks.push(taskName);
+              break;
+            }
+          }
+        }
+      }
+
+      // Deduplicate and sort
+      return [...new Set(tasks)].sort();
+    } catch {
+      // Fallback: check common task names directly
+      const commonTasks: string[] = [];
+
+      for (const pattern of DESKTOP_TASK_PATTERNS) {
+        try {
+          // SECURITY: argv-form — `pattern` from internal const, single task name (no spaces).
+          execFileSync(invocation.command, [...invocation.prefixArgs, pattern, "--dry-run"], {
+            cwd: projectPath,
+            encoding: "utf-8",
+            timeout: 30000,
+            maxBuffer: 1024 * 1024,
+            stdio: "pipe",
+          });
+          commonTasks.push(pattern);
+        } catch {
+          // Task doesn't exist
+        }
+      }
+
+      return commonTasks;
+    }
+  }
+
+  /**
+   * Analyze Gradle project and return info
+   */
+  async analyzeProject(projectPath: string): Promise<GradleProject> {
+    if (!fs.existsSync(projectPath)) {
+      throw new Error(`Project path does not exist: ${projectPath}`);
+    }
+
+    // Check for build.gradle or build.gradle.kts
+    const hasBuildGradle =
+      fs.existsSync(path.join(projectPath, "build.gradle")) ||
+      fs.existsSync(path.join(projectPath, "build.gradle.kts"));
+
+    if (!hasBuildGradle) {
+      throw new Error(`No build.gradle or build.gradle.kts found in: ${projectPath}`);
+    }
+
+    const desktopTasks = await this.detectDesktopTasks(projectPath);
+
+    return {
+      path: projectPath,
+      desktopTasks,
+      selectedTask: desktopTasks[0], // Default to first detected task
+    };
+  }
+
+  /**
+   * Launch desktop app via Gradle
+   * Returns the spawned process
+   */
+  launch(options: RawLaunchOptions): ChildProcess {
+    const normalized = normalizeLaunchOptions({ ...options, mode: "gradle" });
+    if (normalized.mode !== "gradle") {
+      throw new Error("Invalid Gradle launch options.");
+    }
+    const { projectPath, task, jvmArgs = [], env = {} } = normalized;
+
+    if (!projectPath) {
+      throw new Error("projectPath is required to launch via Gradle");
+    }
+
+    if (!fs.existsSync(projectPath)) {
+      throw new Error(`Project path does not exist: ${projectPath}`);
+    }
+
+    const invocation = this.getGradleInvocation(projectPath);
+
+    // Determine task to run
+    let targetTask = task;
+    if (!targetTask) {
+      // Auto-detect
+      const detected = this.detectDesktopTasksSync(projectPath);
+      if (detected.length === 0) {
+        throw new Error(
+          `No desktop run task found in project. ` +
+          `Please specify task explicitly or ensure project has Compose Desktop configured.`
+        );
+      }
+      targetTask = detected[0];
+    }
+
+    // Build command args
+    const args: string[] = [...invocation.prefixArgs, targetTask];
+
+    // Add JVM args
+    if (jvmArgs.length > 0) {
+      args.push(`-Dorg.gradle.jvmargs=${jvmArgs.join(" ")}`);
+    }
+
+    // Add --console=plain for cleaner output
+    args.push("--console=plain");
+
+    // Merge environment
+    const processEnv = {
+      ...process.env,
+      ...env,
+    };
+
+    // Spawn Gradle process
+    const child = spawn(invocation.command, args, {
+      cwd: projectPath,
+      env: processEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: false,
+    });
+
+    return child;
+  }
+
+  /**
+   * Synchronous version of detectDesktopTasks (for launch)
+   */
+  private detectDesktopTasksSync(projectPath: string): string[] {
+    const invocation = this.getGradleInvocation(projectPath);
+    const tasks: string[] = [];
+
+    // Quick check for common patterns
+    for (const pattern of DESKTOP_TASK_PATTERNS) {
+      try {
+        // SECURITY: argv-form — `pattern` from internal const, single task name (no spaces).
+        execFileSync(invocation.command, [...invocation.prefixArgs, pattern, "--dry-run"], {
+          cwd: projectPath,
+          encoding: "utf-8",
+          timeout: 30000,
+          maxBuffer: 1024 * 1024,
+          stdio: "pipe",
+        });
+        tasks.push(pattern);
+      } catch {
+        // Task doesn't exist
+      }
+    }
+
+    return tasks;
+  }
+
+  /**
+   * Stop a running Gradle process
+   */
+  async stop(child: ChildProcess): Promise<void> {
+    if (child.pid === undefined) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const gracefulExit = this.waitForExit(child, 1_000);
+    try { child.kill("SIGTERM"); } catch {}
+    if (await gracefulExit) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const forcedExit = this.waitForExit(child, 1_000);
+    try { child.kill("SIGKILL"); } catch {}
+    if (!await forcedExit) {
+      throw new Error(`Desktop process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
+    }
+  }
+
+  private waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+    if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (exited: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        child.removeListener("exit", onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      child.once("exit", onExit);
+      if (child.exitCode !== null || child.signalCode !== null) finish(true);
+    });
+  }
+
+  /**
+   * Check if Gradle daemon is running
+   */
+  isGradleDaemonRunning(projectPath: string): boolean {
+    const gradle = this.getGradleExecutable(projectPath);
+    try {
+      // SECURITY: argv-form invocation — no shell parsing of `gradle` path.
+      const output = execFileSync(gradle, ["--status"], {
+        cwd: projectPath,
+        encoding: "utf-8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      return output.includes("IDLE") || output.includes("BUSY");
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Stop Gradle daemon
+   */
+  stopGradleDaemon(projectPath: string): void {
+    const gradle = this.getGradleExecutable(projectPath);
+    try {
+      // SECURITY: argv-form invocation — no shell parsing of `gradle` path.
+      execFileSync(gradle, ["--stop"], {
+        cwd: projectPath,
+        encoding: "utf-8",
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch {
+      // Ignore errors
+    }
+  }
+}

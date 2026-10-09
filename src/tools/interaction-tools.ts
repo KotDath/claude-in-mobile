@@ -15,16 +15,16 @@ export const interactionTools: ToolDefinition[] = [
       "auto-scaled to device coordinates before dispatch. If no screen(action:'capture') has been called yet, " +
       "the scale defaults to 1× (i.e., x/y are treated as device coords). The resolution from the most recent " +
       "screenshot is used — capturing at preset='low' (270×480) then tapping with x/y from that image works " +
-      "transparently. Coordinates returned by ui(action:'find') and ui(action:'tree') are ALREADY device " +
-      "coordinates from uiautomator; passing them as raw x/y when a low-res screenshot is the most recent " +
-      "capture will OVER-SCALE them. Prefer index/text/resourceId for ui_*-sourced taps to avoid this pitfall.",
+      "transparently. Coordinates returned by ui(action:'find') and ui(action:'tree') are ALREADY target " +
+      "coordinates (Android pixels or iOS points); do not pass them as raw screenshot x/y after a capture. " +
+      "Prefer label/text/resourceId/index selectors for UI-tree-sourced interactions.",
     schema: z.object({
       x: z.number().optional().describe("X coordinate (screenshot pixel space — see tool description)"),
       y: z.number().optional().describe("Y coordinate (screenshot pixel space — see tool description)"),
-      text: z.string().optional().describe("Android: Element text. iOS: Element name (less reliable than label)"),
+      text: z.string().optional().describe("Android/HarmonyOS: Element text. iOS: Element name (less reliable than label)"),
       label: z.string().optional().describe("iOS only: Accessibility label (most reliable)"),
-      resourceId: z.string().optional().describe("Find element with this resource ID and tap it (Android only)"),
-      index: z.number().optional().describe("Tap element by index from ui(action:'tree') output (Android only)"),
+      resourceId: z.string().optional().describe("Find element with this resource ID and tap it (Android/HarmonyOS)"),
+      index: z.number().optional().describe("Tap element by index from ui(action:'tree') output (Android/HarmonyOS)"),
       targetPid: z.number().optional().describe("Desktop only: PID of target process. When provided, sends tap without stealing window focus."),
       hints: z.boolean().default(true).describe("Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screen(action:'capture')/ui(action:'tree')."),
       platform: platformEnum,
@@ -60,7 +60,7 @@ export const interactionTools: ToolDefinition[] = [
       let { x, y } = resolved;
 
       if (resolved.fromRawArgs) {
-        ({ x, y } = applyScale(x, y, currentPlatform ?? undefined, ctx));
+        ({ x, y } = await applyScale(x, y, currentPlatform ?? undefined, ctx, deviceId));
       }
 
       await ctx.deviceManager.tap(x, y, platform, args.targetPid, deviceId);
@@ -80,9 +80,9 @@ export const interactionTools: ToolDefinition[] = [
     schema: z.object({
       x: z.number().optional().describe("X coordinate (screenshot pixel space)"),
       y: z.number().optional().describe("Y coordinate (screenshot pixel space)"),
-      text: z.string().optional().describe("Find element by text and double tap it (Android only)"),
-      resourceId: z.string().optional().describe("Find element with this resource ID and double tap it (Android only)"),
-      index: z.number().optional().describe("Double tap element by index from ui(action:'tree') output (Android only)"),
+      text: z.string().optional().describe("Find element by text and double tap it (Android/HarmonyOS)"),
+      resourceId: z.string().optional().describe("Find element with this resource ID and double tap it (Android/HarmonyOS)"),
+      index: z.number().optional().describe("Double tap element by index from ui(action:'tree') output (Android/HarmonyOS)"),
       interval: z.number().default(100).describe("Delay between taps in milliseconds (default: 100)"),
       hints: z.boolean().default(true).describe("Return hints about what changed after the action."),
       platform: platformEnum,
@@ -107,7 +107,7 @@ export const interactionTools: ToolDefinition[] = [
       let { x, y } = resolved;
 
       if (resolved.fromRawArgs) {
-        ({ x, y } = applyScale(x, y, currentPlatform ?? undefined, ctx));
+        ({ x, y } = await applyScale(x, y, currentPlatform ?? undefined, ctx, deviceId));
       }
 
       await ctx.deviceManager.doubleTap(x, y, interval, platform, deviceId);
@@ -127,7 +127,7 @@ export const interactionTools: ToolDefinition[] = [
       x: z.number().optional().describe("X coordinate (screenshot pixel space)"),
       y: z.number().optional().describe("Y coordinate (screenshot pixel space)"),
       label: z.string().optional().describe("iOS only: Accessibility label (most reliable)"),
-      text: z.string().optional().describe("Find element by text (Android only)"),
+      text: z.string().optional().describe("Find element by text (Android/HarmonyOS)"),
       duration: z.number().default(1000).describe("Duration in milliseconds (default: 1000)"),
       platform: platformEnum,
       deviceId: deviceIdField,
@@ -165,7 +165,7 @@ export const interactionTools: ToolDefinition[] = [
       let { x, y } = resolved;
 
       if (resolved.fromRawArgs) {
-        ({ x, y } = applyScale(x, y, currentPlatform ?? undefined, ctx));
+        ({ x, y } = await applyScale(x, y, currentPlatform ?? undefined, ctx, deviceId));
       }
 
       await ctx.deviceManager.longPress(x, y, duration, platform, deviceId);
@@ -214,8 +214,8 @@ export const interactionTools: ToolDefinition[] = [
       if (x1 !== undefined && y1 !== undefined &&
           x2 !== undefined && y2 !== undefined) {
         const duration = args.duration;
-        const p1 = applyScale(x1, y1, currentPlatform ?? undefined, ctx);
-        const p2 = applyScale(x2, y2, currentPlatform ?? undefined, ctx);
+        const p1 = await applyScale(x1, y1, currentPlatform ?? undefined, ctx, deviceId);
+        const p2 = await applyScale(x2, y2, currentPlatform ?? undefined, ctx, deviceId);
         await ctx.deviceManager.swipe(p1.x, p1.y, p2.x, p2.y, duration, platform, deviceId);
         ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
         let result = `Swiped from (${p1.x}, ${p1.y}) to (${p2.x}, ${p2.y})`;
@@ -245,7 +245,7 @@ export const interactionTools: ToolDefinition[] = [
       const text = args.text;
       await ctx.deviceManager.inputText(text, platform, args.targetPid, deviceId);
       ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
-      let result = `Entered text: "${text}"`;
+      let result = `Entered ${text.length} character(s).`;
       if (args.hints) {
         result += await ctx.generateActionHints(args.platform);
       }

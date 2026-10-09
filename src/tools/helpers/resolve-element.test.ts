@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { resolveElementCoordinates } from "./resolve-element.js";
+import { resolveElementCoordinates, applyScale } from "./resolve-element.js";
 import type { ToolContext } from "../context.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { ElementNotFoundError } from "../../errors.js";
 
 // ─────────────────────────────────────────────────────────────
@@ -13,8 +14,8 @@ function makeCtx(overrides: {
     findElement: (...args: any[]) => Promise<any>;
     getElementRect: (...args: any[]) => Promise<any>;
   };
-  getCachedElements?: (platform: string) => import("../../adb/ui-parser.js").UiElement[];
-  setCachedElements?: (platform: string, elements: import("../../adb/ui-parser.js").UiElement[]) => void;
+  getCachedElements?: (platform: string) => UiElement[];
+  setCachedElements?: (platform: string, elements: UiElement[]) => void;
   getUiHierarchyAsync?: (platform: string) => Promise<string>;
 } = {}): ToolContext {
   return {
@@ -42,8 +43,8 @@ function makeCtx(overrides: {
 
 /** Minimal UiElement factory — only the fields resolveElementCoordinates actually reads. */
 function makeUiElement(
-  overrides: Partial<import("../../adb/ui-parser.js").UiElement> = {},
-): import("../../adb/ui-parser.js").UiElement {
+  overrides: Partial<UiElement> = {},
+): UiElement {
   return {
     index: 0,
     resourceId: "",
@@ -237,6 +238,38 @@ describe("resolveElementCoordinates — Android with text", () => {
   });
 });
 
+describe("resolveElementCoordinates — HarmonyOS with text", () => {
+  it("parses ArkXTest JSON and preserves the requested device", async () => {
+    const hierarchy = JSON.stringify({
+      attributes: {
+        type: "Button",
+        text: "Continue",
+        id: "continue",
+        bounds: "[20,10][220,110]",
+        clickable: true,
+      },
+    });
+    const getUiHierarchyAsync = vi.fn().mockResolvedValue(hierarchy);
+    const setCachedElements = vi.fn();
+    const ctx = makeCtx({ getUiHierarchyAsync, setCachedElements });
+
+    const result = await resolveElementCoordinates(
+      { text: "Continue" },
+      ctx,
+      "harmony",
+      "phone-1",
+    );
+
+    expect(getUiHierarchyAsync).toHaveBeenCalledWith("harmony", "phone-1");
+    expect(result).toMatchObject({
+      x: 120,
+      y: 60,
+      description: "Continue",
+      fromRawArgs: false,
+    });
+  });
+});
+
 // ─────────────────────────────────────────────────────────────
 // Raw x/y coordinates
 // ─────────────────────────────────────────────────────────────
@@ -279,5 +312,58 @@ describe("resolveElementCoordinates — no coordinates", () => {
     const ctx = makeCtx();
     const result = await resolveElementCoordinates({ action: "tap", platform: "android" }, ctx, "android");
     expect(result).toBeNull();
+  });
+});
+
+/**
+ * Screenshots are captured at device pixels; iOS taps go to WebDriverAgent, which
+ * takes points. A scale that stops at pixels sends the tap 2-3x past its target.
+ */
+describe("applyScale — iOS taps land in the point space WDA expects", () => {
+  it("uses the requested device and carries compressed screenshot coordinates into points", async () => {
+    const getIosClient = vi.fn(() => ({
+      getScreenPointSize: async () => ({ width: 402, height: 874 }),
+    }));
+    const ctx = makeCtx({ getIosClient } as any);
+    (ctx.deviceManager as any).getCurrentPlatform = () => "ios";
+    // iPhone 17 Pro: 1206x2622 px = 402x874 pt, screenshot compressed to 442x960.
+    ctx.screenshotScaleMap.set("ios:device-a", {
+      scaleX: 1206 / 442,
+      scaleY: 2622 / 960,
+      originalWidth: 1206,
+      originalHeight: 2622,
+    });
+
+    const result = await applyScale(353, 92, "ios", ctx, "device-a");
+
+    expect(result).toEqual({ x: 321, y: 84 });
+    expect(getIosClient).toHaveBeenCalledWith("device-a");
+  });
+
+  it("converts an uncompressed 1x iOS screenshot from pixels into points", async () => {
+    const ctx = makeCtx({
+      getIosClient: () => ({
+        getScreenPointSize: async () => ({ width: 402, height: 874 }),
+      }),
+    } as any);
+    ctx.screenshotScaleMap.set("ios", {
+      scaleX: 1,
+      scaleY: 1,
+      originalWidth: 1206,
+      originalHeight: 2622,
+    });
+
+    await expect(applyScale(963, 252, "ios", ctx)).resolves.toEqual({ x: 321, y: 84 });
+  });
+
+  it("leaves Android alone — its taps are already in device pixels", async () => {
+    const ctx = makeCtx();
+    ctx.screenshotScaleMap.set("android", {
+      scaleX: 2, scaleY: 2, originalWidth: 1080, originalHeight: 2400,
+    });
+
+    const { x, y } = await applyScale(100, 200, "android", ctx);
+
+    expect({ x, y }).toEqual({ x: 200, y: 400 });
   });
 });

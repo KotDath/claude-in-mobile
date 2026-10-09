@@ -3,17 +3,17 @@ import { defineTool, z } from "./define-tool.js";
 import { platformEnum, deviceIdField } from "./common-schema.js";
 import { truncateOutput } from "../utils/truncate.js";
 import {
+  validatePath,
   validateShellCommand,
   validateUrl,
-  sanitizeForShell,
   validatePackageName,
 } from "../utils/sanitize.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
-import { AM, PIDOF } from "../adb/commands.js";
-import { dispatchByPlatform } from "./helpers/dispatch.js";
-import { auroraSystemCapabilityTools } from "./aurora-capability-tools.js";
+import { BoundedRegexMatcher } from "../utils/bounded-regex.js";
+import { PIDOF } from "../adb/commands.js";
+import { hasShell, hasUrlOpening } from "../adapters/platform-adapter.js";
 
 const commonFields = {
   platform: platformEnum,
@@ -52,15 +52,12 @@ export const systemTools: ToolDefinition[] = [
           "Single shell command, no chaining or shell metacharacters. " +
             "Example: 'pm list packages -3' (valid), 'pm list packages | grep foo' (rejected).",
         ),
-      root: z.boolean().default(false).describe("Run as root (Aurora only)"),
       ...commonFields,
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       validateShellCommand(args.command);
-      const output = platform === "aurora" && args.root
-        ? ctx.deviceManager.getAuroraClient().shell(args.command, args.root)
-        : ctx.deviceManager.shell(args.command, platform, deviceId);
+      const output = ctx.deviceManager.shell(args.command, platform, deviceId);
       return textResult(truncateOutput(output || "(no output)"));
     },
   }),
@@ -82,6 +79,50 @@ export const systemTools: ToolDefinition[] = [
   }),
 
   defineTool({
+    name: "system_file_push",
+    description: "Upload a local file to a device with file transfer support",
+    schema: z.object({
+      localPath: z.string().describe("Local file path"),
+      remotePath: z.string().describe("Remote destination path"),
+      ...commonFields,
+    }),
+    handler: async (args, ctx) => {
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePath(args.localPath, "localPath");
+      validatePath(args.remotePath, "remotePath");
+      const result = await ctx.deviceManager.pushFile(
+        args.localPath,
+        args.remotePath,
+        platform,
+        deviceId,
+      );
+      return textResult(result);
+    },
+  }),
+
+  defineTool({
+    name: "system_file_pull",
+    description: "Download a file from a device with file transfer support",
+    schema: z.object({
+      remotePath: z.string().describe("Path to the remote file"),
+      localPath: z.string().optional().describe("Optional local destination path"),
+      ...commonFields,
+    }),
+    handler: async (args, ctx) => {
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePath(args.remotePath, "remotePath");
+      if (args.localPath) validatePath(args.localPath, "localPath");
+      const result = await ctx.deviceManager.pullFile(
+        args.remotePath,
+        args.localPath,
+        platform,
+        deviceId,
+      );
+      return textResult(result);
+    },
+  }),
+
+  defineTool({
     name: "system_open_url",
     description: "Open URL in device browser",
     schema: z.object({
@@ -91,24 +132,12 @@ export const systemTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       validateUrl(args.url);
-      const sanitizedUrl = sanitizeForShell(args.url);
-
-      return dispatchByPlatform(platform, {
-        android: () => {
-          ctx.deviceManager.shell(AM.START_VIEW(sanitizedUrl), "android", deviceId);
-          return textResult(`Opened URL: ${args.url}`);
-        },
-        ios: () => {
-          ctx.deviceManager.getIosClient(deviceId).openUrl(args.url);
-          return textResult(`Opened URL: ${args.url}`);
-        },
-        aurora: () => {
-          const result = ctx.deviceManager.getAuroraClient().execute(["open", args.url]);
-          return textResult(`Opened URL: ${args.url}\n${JSON.stringify(result)}`);
-        },
-        unsupported: (p) =>
-          textResult(`open_url is not supported for ${p} platform. Supported: android, ios, aurora.`),
-      });
+      const adapter = ctx.deviceManager.getAdapter(platform, deviceId);
+      if (!hasUrlOpening(adapter)) {
+        return textResult(`open_url is not supported for ${platform} platform.`);
+      }
+      await adapter.openUrl(args.url, deviceId);
+      return textResult("URL opened.");
     },
   }),
 
@@ -121,31 +150,25 @@ export const systemTools: ToolDefinition[] = [
         .string()
         .optional()
         .describe(
-          "Log level filter. Android: V/D/I/W/E/F (Verbose/Debug/Info/Warning/Error/Fatal). iOS: debug/info/default/error/fault",
+          "Log level filter. Android: V/D/I/W/E/F. iOS: debug/info/default/error/fault. HarmonyOS: HiLog level text.",
         ),
-      tag: z.string().optional().describe("Filter by tag (Android only)"),
+      tag: z.string().optional().describe("Filter by tag (Android/HarmonyOS)"),
       lines: z
         .number()
         .default(100)
         .describe("Number of lines to return (default: 100)"),
       package: z.string().optional().describe("Filter by package/bundle ID"),
-      priority: z.string().optional().describe("journal priority (Aurora)"),
-      unit: z.string().optional().describe("systemd unit filter (Aurora)"),
-      grep: z.string().optional().describe("journal regex filter (Aurora)"),
-      since: z.string().optional().describe("journal timestamp (Aurora)"),
-      kernel: z.boolean().default(false).describe("Read kernel journal (Aurora)"),
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-      const logs = platform === "aurora"
-        ? ctx.deviceManager.getAuroraClient().getLogs({
-            lines: Math.min(args.lines, 500), priority: args.priority ?? args.level,
-            unit: args.unit, grep: args.grep ?? args.package, since: args.since, kernel: args.kernel,
-          })
-        : ctx.deviceManager.getLogs({
-            platform, deviceId, level: args.level, tag: args.tag,
-            lines: Math.min(args.lines, 500), package: args.package,
-          });
+      const logs = ctx.deviceManager.getLogs({
+        platform,
+        deviceId,
+        level: args.level,
+        tag: args.tag,
+        lines: Math.min(args.lines, 500),
+        package: args.package,
+      });
       return textResult(truncateOutput(logs || "(no logs)", { maxLines: 500 }));
     },
   }),
@@ -153,7 +176,7 @@ export const systemTools: ToolDefinition[] = [
   defineTool({
     name: "system_wait_log",
     description:
-      "Wait until a regex pattern appears in device logs. Polls the log buffer at regular intervals; returns the matching line(s) plus optional context, or times out. Use after an action to wait for a known marker (e.g., 'NavigationCompleted', a custom Debug.WriteLine tag) instead of fixed system_wait + system_logs polling. Android only.",
+      "Wait until a regex pattern appears in device logs. Polls the log buffer at regular intervals; returns the matching line(s) plus optional context, or times out. Use after an action to wait for a known marker instead of fixed system_wait + system_logs polling. Available on platforms with logs support.",
     schema: z.object({
       pattern: z
         .string()
@@ -177,8 +200,8 @@ export const systemTools: ToolDefinition[] = [
         .number()
         .default(0)
         .describe("Extra lines after each match to return for context (default: 0, max: 20)"),
-      level: z.string().optional().describe("Pre-filter by log level. Android: V/D/I/W/E/F"),
-      tag: z.string().optional().describe("Pre-filter by tag (Android only)"),
+      level: z.string().optional().describe("Pre-filter by log level"),
+      tag: z.string().optional().describe("Pre-filter by tag (Android/HarmonyOS)"),
       package: z.string().optional().describe("Pre-filter by package"),
       clearFirst: z
         .boolean()
@@ -190,16 +213,16 @@ export const systemTools: ToolDefinition[] = [
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-      if (platform !== "android") {
-        return textResult("system_wait_log is only available for Android.");
+      const adapter = ctx.deviceManager.getAdapter(platform, deviceId);
+      if (!hasShell(adapter)) {
+        return textResult(`system_wait_log is not supported for ${platform}.`);
       }
 
-      let regex: RegExp;
+      let matcher: BoundedRegexMatcher;
       try {
-        regex = new RegExp(args.pattern, args.caseSensitive ? "" : "i");
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return textResult(`Invalid regex pattern: ${msg}`);
+        matcher = new BoundedRegexMatcher(args.pattern, args.caseSensitive);
+      } catch (error) {
+        return textResult(error instanceof Error ? error.message : String(error));
       }
 
       const timeoutMs = Math.max(0, Math.min(args.timeoutMs, 30_000));
@@ -209,61 +232,72 @@ export const systemTools: ToolDefinition[] = [
       );
       const contextLines = Math.max(0, Math.min(args.contextLines, 20));
 
-      if (args.clearFirst) {
-        try {
-          ctx.deviceManager.clearLogs(platform, deviceId);
-        } catch {
-          /* best-effort */
+      try {
+        if (args.clearFirst) {
+          try {
+            ctx.deviceManager.clearLogs(platform, deviceId);
+          } catch {
+            /* best-effort */
+          }
         }
-      }
 
-      const filterArgs = {
-        platform,
-        deviceId,
-        level: args.level,
-        tag: args.tag,
-        lines: 500,
-        package: args.package,
-      };
-      const seen = new Set<string>();
-      const start = Date.now();
-      while (true) {
-        let dump = "";
-        try {
-          dump = ctx.deviceManager.getLogs(filterArgs);
-        } catch {
-          /* keep looping */
-        }
-        const lines = dump.split(/\r?\n/);
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line || seen.has(line)) continue;
-          seen.add(line);
-          if (regex.test(line)) {
+        const filterArgs = {
+          platform,
+          deviceId,
+          level: args.level,
+          tag: args.tag,
+          lines: 500,
+          package: args.package,
+        };
+        const seen = new Set<string>();
+        const start = Date.now();
+        while (true) {
+          let dump = "";
+          try {
+            dump = ctx.deviceManager.getLogs(filterArgs);
+          } catch {
+            /* keep looping */
+          }
+          const lines = dump.split(/\r?\n/);
+          const candidates: string[] = [];
+          const candidateIndexes: number[] = [];
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (!line || seen.has(line)) continue;
+            seen.add(line);
+            candidates.push(line);
+            candidateIndexes.push(i);
+          }
+          const matchIndex = await matcher.findMatch(candidates);
+          if (matchIndex >= 0) {
+            const lineIndex = candidateIndexes[matchIndex];
+            const line = lines[lineIndex];
             const elapsed = Date.now() - start;
             const context =
               contextLines > 0
-                ? lines.slice(i + 1, i + 1 + contextLines).filter(Boolean).join("\n")
+                ? lines.slice(lineIndex + 1, lineIndex + 1 + contextLines).filter(Boolean).join("\n")
                 : "";
             return textResult(
               `Match found after ${elapsed}ms:\n${line}${context ? `\n${context}` : ""}`,
             );
           }
+          if (Date.now() - start >= timeoutMs) {
+            return textResult(
+              `Timeout after ${timeoutMs}ms — pattern not found. Scanned ${seen.size} unique lines.`,
+            );
+          }
+          await sleep(pollIntervalMs);
         }
-        if (Date.now() - start >= timeoutMs) {
-          return textResult(
-            `Timeout after ${timeoutMs}ms — pattern not found. Scanned ${seen.size} unique lines.`,
-          );
-        }
-        await sleep(pollIntervalMs);
+      } finally {
+        await matcher.close();
       }
     },
   }),
 
   defineTool({
     name: "system_clear_logs",
-    description: "Clear device log buffer",
-    schema: z.object({ deviceId: deviceIdField, platform: platformEnum }),
+    description: "Clear the device log buffer",
+    schema: z.object(commonFields),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const result = ctx.deviceManager.clearLogs(platform, deviceId);
@@ -318,12 +352,10 @@ export const systemTools: ToolDefinition[] = [
   defineTool({
     name: "system_info",
     description: "Get battery and memory info",
-    schema: z.object({ category: z.string().optional().describe("Aurora info category"), ...commonFields }),
+    schema: z.object({ ...commonFields }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-      const info = platform === "aurora"
-        ? ctx.deviceManager.getAuroraClient().getSystemInfo(args.category)
-        : await ctx.deviceManager.getSystemInfo(platform, deviceId);
+      const info = await ctx.deviceManager.getSystemInfo(platform, deviceId);
       return textResult(info);
     },
   }),
@@ -341,21 +373,33 @@ export const systemTools: ToolDefinition[] = [
       const inspector = ctx.deviceManager.getWebViewInspector();
       const result = await inspector.inspect();
 
-      let output = `WebView sockets found: ${result.sockets.join(", ")}\n`;
-      output += `Forwarded to port: ${result.forwardedPort}\n\n`;
-
+      const lines = [
+        `WebView sockets found: ${result.sockets.join(", ")}`,
+        `Forwarded to port: ${result.forwardedPort}`,
+        "",
+      ];
+      let formattedChars = lines.reduce((total, line) => total + line.length + 1, 0);
       if (result.targets.length === 0) {
-        output += "No active pages found in WebView.";
+        lines.push("No active pages found in WebView.");
       } else {
-        output += `Pages (${result.targets.length}):\n`;
-        for (const target of result.targets) {
-          output += `  • [${target.type}] "${target.title}"\n`;
-          output += `    URL: ${target.url}\n`;
-          output += `    ID: ${target.id}\n`;
+        lines.push(`Pages (${result.targets.length}):`);
+        for (let index = 0; index < result.targets.length; index++) {
+          const target = result.targets[index];
+          const entry = [
+            `  • [${target.type}] "${target.title}"`,
+            `    URL: ${target.url}`,
+            `    ID: ${target.id}`,
+          ];
+          const entryChars = entry.reduce((total, line) => total + line.length + 1, 0);
+          if (formattedChars + entryChars > 12_000) {
+            lines.push(`  [${result.targets.length - index} targets omitted]`);
+            break;
+          }
+          lines.push(...entry);
+          formattedChars += entryChars;
         }
       }
-      return textResult(output);
+      return textResult(truncateOutput(lines.join("\n")));
     },
   }),
-  ...auroraSystemCapabilityTools,
 ];

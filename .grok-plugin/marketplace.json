@@ -1,0 +1,23 @@
+{
+  "name": "mcp-devices",
+  "owner": {
+    "name": "AlexGladkov",
+    "url": "https://github.com/AlexGladkov"
+  },
+  "plugins": [
+    {
+      "name": "mcp-devices",
+      "description": "Mobile device automation CLI for Android, iOS, Aurora OS, and Desktop platforms",
+      "source": "./cli/plugin",
+      "version": "4.4.1",
+      "category": "development",
+      "keywords": [
+        "mobile",
+        "android",
+        "ios",
+        "mcp",
+        "devices"
+      ]
+    }
+  ]
+}

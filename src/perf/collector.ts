@@ -5,8 +5,8 @@
  * is validated via validatePackageName() before interpolation.
  */
 
-import type { AdbClient } from "../adb/client.js";
-import type { DesktopClient } from "../desktop/client.js";
+import type { AdbClientLike } from "../adapters/contracts.js";
+import type { DesktopClientLike } from "../adapters/contracts.js";
 import type { PerfSnapshot, CrashEntry } from "./types.js";
 import { validatePackageName } from "../utils/sanitize.js";
 import { sanitizeErrorMessage } from "../utils/sanitize.js";
@@ -52,23 +52,18 @@ function parseCpuFromDumpsys(output: string, packageName: string): { appPercent:
 
 function parseFpsFromGfxinfo(output: string): { current: number; jankyFrames?: number; totalFrames?: number } | null {
   const totalMatch = output.match(/Total frames rendered:\s*(\d+)/);
-  const jankyMatch = output.match(/Janky frames:\s*(\d+)/);
-
-  if (!totalMatch) return null;
+  const percentileMatch = output.match(/50th percentile:\s*(\d+)ms/);
+  if (!totalMatch || !percentileMatch) return null;
 
   const totalFrames = parseInt(totalMatch[1], 10);
-  const jankyFrames = jankyMatch ? parseInt(jankyMatch[1], 10) : undefined;
-
-  // Estimate FPS from frame stats (if available)
-  // Look for "50th percentile:" line for frame time
-  const percentileMatch = output.match(/50th percentile:\s*(\d+)ms/);
-  let current = 60; // Default assumption
-  if (percentileMatch) {
-    const frameTimeMs = parseInt(percentileMatch[1], 10);
-    if (frameTimeMs > 0) {
-      current = Math.min(60, Math.round(1000 / frameTimeMs));
-    }
+  const frameTimeMs = parseInt(percentileMatch[1], 10);
+  if (!Number.isFinite(totalFrames) || !Number.isFinite(frameTimeMs) || frameTimeMs <= 0) {
+    return null;
   }
+
+  const jankyMatch = output.match(/Janky frames:\s*(\d+)/);
+  const jankyFrames = jankyMatch ? parseInt(jankyMatch[1], 10) : undefined;
+  const current = Math.min(60, Math.round(1000 / frameTimeMs));
 
   return { current, jankyFrames, totalFrames };
 }
@@ -175,7 +170,7 @@ function sanitizeCrashSummary(summary: string): string {
 /**
  * Detect foreground package from Android device.
  */
-export function detectForegroundPackage(adb: AdbClient): string | undefined {
+export function detectForegroundPackage(adb: AdbClientLike): string | undefined {
   try {
     const activity = adb.getCurrentActivity();
     if (activity && activity !== "unknown" && !activity.includes("could not determine")) {
@@ -192,7 +187,7 @@ export function detectForegroundPackage(adb: AdbClient): string | undefined {
 /**
  * Collect performance snapshot from Android device.
  */
-export function collectAndroidSnapshot(adb: AdbClient, packageName: string): PerfSnapshot {
+export function collectAndroidSnapshot(adb: AdbClientLike, packageName: string): PerfSnapshot {
   validatePackageName(packageName);
 
   let memory: PerfSnapshot["memory"] = null;
@@ -260,7 +255,7 @@ export function collectAndroidSnapshot(adb: AdbClient, packageName: string): Per
 /**
  * Collect performance snapshot from Desktop client.
  */
-export async function collectDesktopSnapshot(desktop: DesktopClient): Promise<PerfSnapshot> {
+export async function collectDesktopSnapshot(desktop: DesktopClientLike): Promise<PerfSnapshot> {
   let memory: PerfSnapshot["memory"] = null;
   let cpu: PerfSnapshot["cpu"] = null;
   let fps: PerfSnapshot["fps"] = null;

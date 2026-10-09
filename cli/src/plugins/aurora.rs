@@ -15,20 +15,20 @@ impl AuroraPlugin {
             manifest: PluginManifest {
                 id: "aurora".into(),
                 name: "Aurora OS".into(),
-                version: "3.11.0".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
                 api_version: "1".into(),
                 capabilities: vec![
                     Capability::Screen,
                     Capability::Input,
+                    Capability::Ui,
                     Capability::Shell,
                     Capability::AppLifecycle,
                     Capability::Logs,
-                    Capability::FileTransfer,
                     Capability::DeviceMgmt,
                 ],
                 tools: vec![],
                 description: Some(
-                    "Aurora Emulator automation via audb >=0.2.0"
+                    "Aurora OS automation via audb (screen, input, app lifecycle, shell, logs)"
                         .into(),
                 ),
             },

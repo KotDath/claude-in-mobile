@@ -1,12 +1,12 @@
 //! Device interaction command handlers.
 //!
 //! Each public function here corresponds to a CLI subcommand that interacts
-//! with a physical or emulated device (Android, iOS, Aurora, Desktop).
+//! with a connected device or simulator.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
-use crate::utils::shell_gate;
-use crate::{android, aurora, desktop, ios, screenshot, scale};
+use crate::utils::{process::terminal_safe, shell_gate};
+use crate::{android, aurora, desktop, harmony, ios, scale, screenshot};
 
 // -- Screenshot / Annotate ----------------------------------------------------
 
@@ -15,20 +15,26 @@ pub fn screenshot(
     output: Option<&str>,
     compress: bool,
     max_width: u32,
+    max_height: u32,
     quality: u8,
     simulator: Option<&str>,
     device: Option<&str>,
     companion_path: Option<&str>,
 ) -> Result<()> {
-    if platform == "desktop" {
-        let data = desktop::screenshot(companion_path)?;
-        return write_or_base64(output, &data);
+    let captured = match platform {
+        "desktop" => Some(desktop::screenshot(companion_path)?),
+        "aurora" => Some(aurora::screenshot(device)?),
+        "harmony" => Some(harmony::screenshot(device)?),
+        _ => None,
+    };
+    if let Some(data) = captured {
+        return screenshot::write_screenshot_output(
+            data, output, compress, max_width, max_height, quality,
+        );
     }
-    if platform == "aurora" {
-        let data = aurora::screenshot(device)?;
-        return write_or_base64(output, &data);
-    }
-    screenshot::take_screenshot(platform, output, compress, max_width, quality, simulator, device)
+    screenshot::take_screenshot(
+        platform, output, compress, max_width, max_height, quality, simulator, device,
+    )
 }
 
 pub fn annotate(
@@ -52,20 +58,21 @@ pub fn tap(
     companion_path: Option<&str>,
     from_size: Option<&str>,
 ) -> Result<()> {
-    if let Some(t) = text {
+    if let Some(text) = text {
         return match platform {
-            "android" => android::tap_element(t, device),
-            "desktop" => desktop::tap_by_text(t, companion_path),
-            "aurora" => anyhow::bail!("UI accessibility is unavailable for Aurora Emulator"),
-            _ => anyhow::bail!("Tap by text is unavailable for {platform}"),
+            "desktop" => desktop::tap_by_text(text, companion_path),
+            "harmony" => harmony::tap_element(text, device),
+            "android" => android::tap_element(text, device),
+            _ => bail!("Tap by text is not supported for {platform}"),
         };
     }
-    let (sx, sy) = scale::apply_scale(x, y, from_size, platform, device, simulator)?;
+    let (x, y) = scale::apply_scale(x, y, from_size, platform, device, simulator)?;
     match platform {
-        "android" => android::tap(sx, sy, device),
-        "ios" => ios::tap(sx, sy, simulator),
-        "aurora" => aurora::tap(sx, sy, device),
-        "desktop" => desktop::tap(sx, sy, companion_path),
+        "android" => android::tap(x, y, device),
+        "ios" => ios::tap(x, y, simulator),
+        "harmony" => harmony::tap(x, y, device),
+        "aurora" => aurora::tap(x, y, device),
+        "desktop" => desktop::tap(x, y, companion_path),
         _ => unreachable!(),
     }
 }
@@ -78,22 +85,24 @@ pub fn long_press(
     text: Option<&str>,
     simulator: Option<&str>,
     device: Option<&str>,
-    from_size: Option<&str>,
 ) -> Result<()> {
-    if let Some(t) = text {
-        if platform != "android" {
-            anyhow::bail!("Long press by text is unavailable for {platform}");
+    if let Some(text) = text {
+        if platform == "harmony" {
+            if let Some((x, y)) = harmony::find_element(text, device)? {
+                return harmony::long_press(x, y, duration.into(), device);
+            }
+            bail!("Element '{text}' not found for long press");
         }
-        if let Some((cx, cy)) = android::find_element(t, device)? {
-            return android::long_press(cx, cy, duration, device);
+        if let Some((x, y)) = android::find_element(text, device)? {
+            return android::long_press(x, y, duration, device);
         }
-        anyhow::bail!("Element '{}' not found for long press", t);
+        bail!("Element '{text}' not found for long press");
     }
-    let (sx, sy) = scale::apply_scale(x, y, from_size, platform, device, simulator)?;
     match platform {
-        "android" => android::long_press(sx, sy, duration, device),
-        "ios" => ios::long_press(sx, sy, duration, simulator),
-        "aurora" => aurora::long_press(sx, sy, duration, device),
+        "android" => android::long_press(x, y, duration, device),
+        "ios" => ios::long_press(x, y, duration, simulator),
+        "harmony" => harmony::long_press(x, y, duration.into(), device),
+        "aurora" => aurora::long_press(x, y, duration, device),
         _ => unreachable!(),
     }
 }
@@ -109,6 +118,7 @@ pub fn open_url(
     match platform {
         "android" => android::open_url(url, device),
         "ios" => ios::open_url(url, simulator),
+        "harmony" => harmony::open_url(url, device),
         "aurora" => aurora::open_url(url, device),
         _ => unreachable!(),
     }
@@ -119,7 +129,6 @@ pub fn shell(
     command: &str,
     simulator: Option<&str>,
     device: Option<&str>,
-    root: bool,
     i_know_what_im_doing: bool,
 ) -> Result<()> {
     // SECURITY (issue #41): `shell` executes whatever the caller passes,
@@ -130,13 +139,12 @@ pub fn shell(
     shell_gate::emit_warning_if_needed();
 
     match platform {
-        "android" if root => anyhow::bail!("--root is only supported for Aurora"),
-        "ios" if root => anyhow::bail!("--root is only supported for Aurora"),
-        "android" => { android::shell(command, device)?; }
-        "ios" => { ios::shell(command, simulator)?; }
-        "aurora" => { aurora::shell(command, root, device)?; }
+        "android" => android::shell(command, device)?,
+        "ios" => ios::shell(command, simulator)?,
+        "harmony" => harmony::shell(command, device)?,
+        "aurora" => aurora::shell(command, device)?,
         _ => unreachable!(),
-    }
+    };
     Ok(())
 }
 
@@ -154,26 +162,44 @@ pub fn swipe(
     device: Option<&str>,
     from_size: Option<&str>,
 ) -> Result<()> {
-    if let Some(dir) = direction {
-        if platform == "aurora" {
-            return aurora::swipe_direction(dir, duration, device);
-        }
-        let (cx, cy) = (540, 960);
-        let dist = 400;
-        match dir.to_lowercase().as_str() {
-            "up"    => { x1 = cx; y1 = cy + dist; x2 = cx; y2 = cy - dist; }
-            "down"  => { x1 = cx; y1 = cy - dist; x2 = cx; y2 = cy + dist; }
-            "left"  => { x1 = cx + dist; y1 = cy; x2 = cx - dist; y2 = cy; }
-            "right" => { x1 = cx - dist; y1 = cy; x2 = cx + dist; y2 = cy; }
+    if let Some(direction) = direction {
+        let (center_x, center_y) = (540, 960);
+        let distance = 400;
+        match direction.to_lowercase().as_str() {
+            "up" => {
+                x1 = center_x;
+                y1 = center_y + distance;
+                x2 = center_x;
+                y2 = center_y - distance;
+            }
+            "down" => {
+                x1 = center_x;
+                y1 = center_y - distance;
+                x2 = center_x;
+                y2 = center_y + distance;
+            }
+            "left" => {
+                x1 = center_x + distance;
+                y1 = center_y;
+                x2 = center_x - distance;
+                y2 = center_y;
+            }
+            "right" => {
+                x1 = center_x - distance;
+                y1 = center_y;
+                x2 = center_x + distance;
+                y2 = center_y;
+            }
             _ => {}
         }
     }
-    let (sx1, sy1) = scale::apply_scale(x1, y1, from_size, platform, device, simulator)?;
-    let (sx2, sy2) = scale::apply_scale(x2, y2, from_size, platform, device, simulator)?;
+    let (x1, y1) = scale::apply_scale(x1, y1, from_size, platform, device, simulator)?;
+    let (x2, y2) = scale::apply_scale(x2, y2, from_size, platform, device, simulator)?;
     match platform {
-        "android" => android::swipe(sx1, sy1, sx2, sy2, duration, device),
-        "ios"     => ios::swipe(sx1, sy1, sx2, sy2, duration, simulator),
-        "aurora"  => aurora::swipe(sx1, sy1, sx2, sy2, duration, device),
+        "android" => android::swipe(x1, y1, x2, y2, duration, device),
+        "ios" => ios::swipe(x1, y1, x2, y2, duration, simulator),
+        "harmony" => harmony::swipe(x1, y1, x2, y2, duration.into(), device),
+        "aurora" => aurora::swipe(x1, y1, x2, y2, duration, device),
         _ => unreachable!(),
     }
 }
@@ -190,6 +216,7 @@ pub fn input(
     match platform {
         "android" => android::input_text(text, device),
         "ios" => ios::input_text(text, simulator),
+        "harmony" => harmony::input_text(text, device),
         "aurora" => aurora::input_text(text, device),
         "desktop" => desktop::input_text(text, companion_path),
         _ => unreachable!(),
@@ -206,6 +233,7 @@ pub fn key(
     match platform {
         "android" => android::press_key(key_name, device),
         "ios" => ios::press_key(key_name, simulator),
+        "harmony" => harmony::press_key(key_name, device),
         "aurora" => aurora::press_key(key_name, device),
         "desktop" => desktop::press_key(key_name, companion_path),
         _ => unreachable!(),
@@ -224,21 +252,29 @@ pub fn ui_dump(
     match platform {
         "android" => android::ui_dump(format, device),
         "ios" => ios::ui_dump(format, simulator),
+        "harmony" => {
+            println!(
+                "{}",
+                terminal_safe(harmony::ui_dump(format, device)?.as_bytes())
+            );
+            Ok(())
+        }
         "desktop" => desktop::get_ui(companion_path),
         _ => unreachable!(),
     }
 }
-
 // -- Device management --------------------------------------------------------
 
 pub fn devices(platform: &str) -> Result<()> {
     match platform {
         "android" => android::print_devices(),
         "ios" => ios::print_devices(),
+        "harmony" => harmony::print_devices(),
         "aurora" => aurora::print_devices(),
         _ => {
             android::print_devices()?;
             ios::print_devices()?;
+            harmony::print_devices()?;
             aurora::print_devices()
         }
     }
@@ -253,6 +289,7 @@ pub fn apps(
     match platform {
         "android" => android::list_apps(filter, device),
         "ios" => ios::list_apps(filter, simulator),
+        "harmony" => harmony::list_apps(filter, device),
         "aurora" => aurora::list_apps(filter, device),
         _ => unreachable!(),
     }
@@ -261,6 +298,8 @@ pub fn apps(
 pub fn launch(
     platform: &str,
     package: &str,
+    ability: Option<&str>,
+    module: Option<&str>,
     simulator: Option<&str>,
     device: Option<&str>,
     companion_path: Option<&str>,
@@ -268,6 +307,7 @@ pub fn launch(
     match platform {
         "android" => android::launch_app(package, device),
         "ios" => ios::launch_app(package, simulator),
+        "harmony" => harmony::launch_app(package, ability, module, device),
         "aurora" => aurora::launch_app(package, device),
         "desktop" => desktop::launch_app(package, companion_path),
         _ => unreachable!(),
@@ -284,6 +324,7 @@ pub fn stop(
     match platform {
         "android" => android::stop_app(package, device),
         "ios" => ios::stop_app(package, simulator),
+        "harmony" => harmony::stop_app(package, device),
         "aurora" => aurora::stop_app(package, device),
         "desktop" => desktop::stop_app(package, companion_path),
         _ => unreachable!(),
@@ -299,6 +340,7 @@ pub fn install(
     match platform {
         "android" => android::install_app(path, device),
         "ios" => ios::install_app(path, simulator),
+        "harmony" => harmony::install(path, device),
         "aurora" => aurora::install_app(path, device),
         _ => unreachable!(),
     }
@@ -313,6 +355,7 @@ pub fn uninstall(
     match platform {
         "android" => android::uninstall_app(package, device),
         "ios" => ios::uninstall_app(package, simulator),
+        "harmony" => harmony::uninstall(package, device),
         "aurora" => aurora::uninstall_app(package, device),
         _ => unreachable!(),
     }
@@ -326,10 +369,17 @@ pub fn find(
     simulator: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    if platform == "android" {
-        android::find_element(query, device)?;
-    } else {
-        ios::find_element(query, simulator)?;
+    match platform {
+        "android" => {
+            android::find_element(query, device)?;
+        }
+        "ios" => {
+            ios::find_element(query, simulator)?;
+        }
+        "harmony" => {
+            harmony::find_element(query, device)?;
+        }
+        _ => bail!("Unsupported platform for find: {platform}"),
     }
     Ok(())
 }
@@ -340,10 +390,11 @@ pub fn tap_text(
     simulator: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    if platform == "android" {
-        android::tap_element(query, device)
-    } else {
-        ios::tap_element(query, simulator)
+    match platform {
+        "android" => android::tap_element(query, device),
+        "ios" => ios::tap_element(query, simulator),
+        "harmony" => harmony::tap_element(query, device),
+        _ => bail!("Unsupported platform for tap-text: {platform}"),
     }
 }
 
@@ -359,19 +410,17 @@ pub fn logs(
     match platform {
         "android" => android::get_logs(filter, lines, device),
         "ios" => ios::get_logs(filter, lines, simulator),
+        "harmony" => harmony::logs(lines, filter, device),
         "aurora" => aurora::get_logs(filter, lines, device),
         _ => unreachable!(),
     }
 }
 
-pub fn clear_logs(
-    platform: &str,
-    simulator: Option<&str>,
-    device: Option<&str>,
-) -> Result<()> {
+pub fn clear_logs(platform: &str, simulator: Option<&str>, device: Option<&str>) -> Result<()> {
     match platform {
         "android" => android::clear_logs(device),
         "ios" => ios::clear_logs(simulator),
+        "harmony" => harmony::clear_logs(device),
         "aurora" => aurora::clear_logs(device),
         _ => unreachable!(),
     }
@@ -379,14 +428,11 @@ pub fn clear_logs(
 
 // -- System -------------------------------------------------------------------
 
-pub fn system_info(
-    platform: &str,
-    simulator: Option<&str>,
-    device: Option<&str>,
-) -> Result<()> {
+pub fn system_info(platform: &str, simulator: Option<&str>, device: Option<&str>) -> Result<()> {
     match platform {
         "android" => android::get_system_info(device),
         "ios" => ios::get_system_info(simulator),
+        "harmony" => harmony::system_info(device),
         "aurora" => aurora::get_system_info(device),
         _ => unreachable!(),
     }
@@ -404,11 +450,7 @@ pub fn current_activity(
     }
 }
 
-pub fn reboot(
-    platform: &str,
-    simulator: Option<&str>,
-    device: Option<&str>,
-) -> Result<()> {
+pub fn reboot(platform: &str, simulator: Option<&str>, device: Option<&str>) -> Result<()> {
     if platform == "android" {
         android::reboot(device)
     } else {
@@ -421,25 +463,19 @@ pub fn screen(state: &str, device: Option<&str>) -> Result<()> {
     android::screen_power(on, device)
 }
 
-pub fn screen_size(
-    platform: &str,
-    simulator: Option<&str>,
-    device: Option<&str>,
-) -> Result<()> {
-    if platform == "android" || platform == "aurora" {
-        let (w, h) = if platform == "android" {
-            android::get_screen_size(device)?
-        } else {
-            aurora::get_screen_size(device)?
-        };
-        println!("Screen size: {}x{}", w, h);
-        Ok(())
-    } else {
-        let data = ios::screenshot(simulator)?;
-        let img = image::load_from_memory(&data)?;
-        println!("Screen size: {}x{}", img.width(), img.height());
-        Ok(())
-    }
+pub fn screen_size(platform: &str, simulator: Option<&str>, device: Option<&str>) -> Result<()> {
+    let (width, height) = match platform {
+        "android" => android::get_screen_size(device)?,
+        "ios" => {
+            let data = ios::screenshot(simulator)?;
+            let image = image::load_from_memory(&data)?;
+            (image.width(), image.height())
+        }
+        "harmony" => harmony::screen_size(device)?,
+        _ => bail!("Unsupported platform for screen-size: {platform}"),
+    };
+    println!("Screen size: {width}x{height}");
+    Ok(())
 }
 
 pub fn wait(ms: u64) -> Result<()> {
@@ -468,22 +504,26 @@ pub fn ui_wait(
     use std::time::Instant;
 
     let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
-
     loop {
-        let found = if platform == "android" {
-            android::find_ui_element(text, resource_id, class_name, device)?
-        } else {
-            ios::find_ui_element(text, resource_id, simulator)?
+        let found = match platform {
+            "android" => android::find_ui_element(text, resource_id, class_name, device)?,
+            "ios" => ios::find_ui_element(text, resource_id, simulator)?,
+            "harmony" => harmony::find_ui_element(text, resource_id, class_name, device)?,
+            _ => bail!("Unsupported platform for ui-wait: {platform}"),
         };
 
         if let Some(elem_desc) = found {
-            println!("Found: {}", elem_desc);
+            println!("Found: {}", terminal_safe(elem_desc.as_bytes()));
             return Ok(());
         }
 
         if Instant::now() >= deadline {
             let query = build_query_description(text, resource_id, class_name);
-            anyhow::bail!("Timeout: element {} not found within {}ms", query, timeout_ms);
+            anyhow::bail!(
+                "Timeout: element {} not found within {}ms",
+                query,
+                timeout_ms
+            );
         }
 
         std::thread::sleep(std::time::Duration::from_millis(interval_ms));
@@ -501,15 +541,19 @@ pub fn ui_assert_visible(
     simulator: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    let found = if platform == "android" {
-        android::find_ui_element(text, resource_id, None, device)?
-    } else {
-        ios::find_ui_element(text, resource_id, simulator)?
+    let found = match platform {
+        "android" => android::find_ui_element(text, resource_id, None, device)?,
+        "ios" => ios::find_ui_element(text, resource_id, simulator)?,
+        "harmony" => harmony::find_ui_element(text, resource_id, None, device)?,
+        _ => bail!("Unsupported platform for ui-assert-visible: {platform}"),
     };
 
     match found {
         Some(elem_desc) => {
-            println!("PASS: Element visible -- {}", elem_desc);
+            println!(
+                "PASS: Element visible -- {}",
+                terminal_safe(elem_desc.as_bytes())
+            );
             Ok(())
         }
         None => {
@@ -530,10 +574,11 @@ pub fn ui_assert_gone(
     simulator: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    let found = if platform == "android" {
-        android::find_ui_element(text, resource_id, None, device)?
-    } else {
-        ios::find_ui_element(text, resource_id, simulator)?
+    let found = match platform {
+        "android" => android::find_ui_element(text, resource_id, None, device)?,
+        "ios" => ios::find_ui_element(text, resource_id, simulator)?,
+        "harmony" => harmony::find_ui_element(text, resource_id, None, device)?,
+        _ => bail!("Unsupported platform for ui-assert-gone: {platform}"),
     };
 
     match found {
@@ -542,7 +587,10 @@ pub fn ui_assert_gone(
             Ok(())
         }
         Some(elem_desc) => {
-            println!("FAIL: Element exists -- {}", elem_desc);
+            println!(
+                "FAIL: Element exists -- {}",
+                terminal_safe(elem_desc.as_bytes())
+            );
             std::process::exit(1);
         }
     }
@@ -583,27 +631,19 @@ pub fn find_and_tap(description: &str, min_confidence: u32, device: Option<&str>
 
 // -- File transfer ------------------------------------------------------------
 
-pub fn push_file(
-    platform: &str,
-    local: &str,
-    remote: &str,
-    device: Option<&str>,
-) -> Result<()> {
+pub fn push_file(platform: &str, local: &str, remote: &str, device: Option<&str>) -> Result<()> {
     match platform {
         "android" => android::push_file(local, remote, device),
+        "harmony" => harmony::push_file(local, remote, device),
         "aurora" => aurora::push_file(local, remote, device),
         _ => unreachable!(),
     }
 }
 
-pub fn pull_file(
-    platform: &str,
-    remote: &str,
-    local: &str,
-    device: Option<&str>,
-) -> Result<()> {
+pub fn pull_file(platform: &str, remote: &str, local: &str, device: Option<&str>) -> Result<()> {
     match platform {
         "android" => android::pull_file(remote, local, device),
+        "harmony" => harmony::pull_file(remote, local, device),
         "aurora" => aurora::pull_file(remote, local, device),
         _ => unreachable!(),
     }
@@ -725,7 +765,7 @@ pub fn network_airplane(enabled: bool, device: Option<&str>) -> Result<()> {
     android::network_airplane(enabled, device)
 }
 
-// -- Permission commands (Android + iOS) --------------------------------------
+// -- Permission commands (Android + iOS + HarmonyOS) --------------------------
 
 pub fn permission_grant(
     platform: &str,
@@ -736,19 +776,21 @@ pub fn permission_grant(
 ) -> Result<()> {
     match platform {
         "android" => android::permission_grant(package, permission, device),
+        "harmony" => harmony::permission_grant(package, permission, device),
         "ios" => {
-            let sim = simulator.unwrap_or("booted");
-            let output = std::process::Command::new("xcrun")
-                .args(["simctl", "privacy", sim, "grant", permission, package])
-                .output()
-                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy grant failed: {}", e))?;
+            crate::utils::validate::validate_bundle_identifier(package)?;
+            crate::utils::validate::validate_simulator_service(permission)?;
+            let output = ios::simctl_exec(&[
+                "privacy",
+                simulator.unwrap_or("booted"),
+                "grant",
+                permission,
+                package,
+            ])?;
             if !output.status.success() {
-                anyhow::bail!(
-                    "simctl privacy grant failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                bail!("Simulator permission grant failed");
             }
-            println!("Granted {} to {}", permission, package);
+            println!("Permission granted");
             Ok(())
         }
         _ => anyhow::bail!("Unsupported platform for permission-grant: {}", platform),
@@ -764,19 +806,21 @@ pub fn permission_revoke(
 ) -> Result<()> {
     match platform {
         "android" => android::permission_revoke(package, permission, device),
+        "harmony" => harmony::permission_revoke(package, permission, device),
         "ios" => {
-            let sim = simulator.unwrap_or("booted");
-            let output = std::process::Command::new("xcrun")
-                .args(["simctl", "privacy", sim, "revoke", permission, package])
-                .output()
-                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy revoke failed: {}", e))?;
+            crate::utils::validate::validate_bundle_identifier(package)?;
+            crate::utils::validate::validate_simulator_service(permission)?;
+            let output = ios::simctl_exec(&[
+                "privacy",
+                simulator.unwrap_or("booted"),
+                "revoke",
+                permission,
+                package,
+            ])?;
             if !output.status.success() {
-                anyhow::bail!(
-                    "simctl privacy revoke failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                bail!("Simulator permission revoke failed");
             }
-            println!("Revoked {} from {}", permission, package);
+            println!("Permission revoked");
             Ok(())
         }
         _ => anyhow::bail!("Unsupported platform for permission-revoke: {}", platform),
@@ -791,19 +835,20 @@ pub fn permission_reset(
 ) -> Result<()> {
     match platform {
         "android" => android::permission_reset(package, device),
+        "harmony" => harmony::permission_reset(package, device),
         "ios" => {
-            let sim = simulator.unwrap_or("booted");
-            let output = std::process::Command::new("xcrun")
-                .args(["simctl", "privacy", sim, "reset", "all", package])
-                .output()
-                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy reset failed: {}", e))?;
+            crate::utils::validate::validate_bundle_identifier(package)?;
+            let output = ios::simctl_exec(&[
+                "privacy",
+                simulator.unwrap_or("booted"),
+                "reset",
+                "all",
+                package,
+            ])?;
             if !output.status.success() {
-                anyhow::bail!(
-                    "simctl privacy reset failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                bail!("Simulator permission reset failed");
             }
-            println!("Permissions reset for {}", package);
+            println!("Permissions reset");
             Ok(())
         }
         _ => anyhow::bail!("Unsupported platform for permission-reset: {}", platform),
@@ -823,7 +868,9 @@ pub fn intent_start(
     flags: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    android::intent_start(action, component, data, category, package, extras, flags, device)
+    android::intent_start(
+        action, component, data, category, package, extras, flags, device,
+    )
 }
 
 pub fn intent_broadcast(
@@ -846,18 +893,12 @@ pub fn intent_deeplink(
     match platform {
         "android" => android::intent_deeplink(uri, package, device),
         "ios" => {
-            let sim = simulator.unwrap_or("booted");
-            let output = std::process::Command::new("xcrun")
-                .args(["simctl", "openurl", sim, uri])
-                .output()
-                .map_err(|e| anyhow::anyhow!("xcrun simctl openurl failed: {}", e))?;
+            crate::utils::validate::validate_deep_link(uri)?;
+            let output = ios::simctl_exec(&["openurl", simulator.unwrap_or("booted"), uri])?;
             if !output.status.success() {
-                anyhow::bail!(
-                    "simctl openurl failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                bail!("Simulator deep-link failed");
             }
-            println!("Opened deep-link on iOS simulator: {}", uri);
+            println!("Deep-link opened");
             Ok(())
         }
         _ => anyhow::bail!("Unsupported platform for intent-deeplink: {}", platform),
@@ -870,11 +911,7 @@ pub fn intent_services(package: Option<&str>, device: Option<&str>) -> Result<()
 
 // -- Sandbox commands (Android-only) ------------------------------------------
 
-pub fn sandbox_prefs_read(
-    package: &str,
-    file: Option<&str>,
-    device: Option<&str>,
-) -> Result<()> {
+pub fn sandbox_prefs_read(package: &str, file: Option<&str>, device: Option<&str>) -> Result<()> {
     android::sandbox_prefs_read(package, file, device)
 }
 
@@ -899,20 +936,80 @@ pub fn sandbox_sqlite_query(
 }
 
 pub fn sandbox_file_list(
+    platform: &str,
     package: &str,
     path: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    android::sandbox_file_list(package, path, device)
+    match platform {
+        "android" => android::sandbox_file_list(package, path, device),
+        "harmony" => harmony::sandbox_file_list(package, path, device),
+        _ => bail!("Unsupported platform for sandbox-file-list: {}", platform),
+    }
 }
 
 pub fn sandbox_file_read(
+    platform: &str,
     package: &str,
     path: &str,
     max_bytes: Option<u64>,
     device: Option<&str>,
 ) -> Result<()> {
-    android::sandbox_file_read(package, path, max_bytes, device)
+    match platform {
+        "android" => android::sandbox_file_read(package, path, max_bytes, device),
+        "harmony" => harmony::sandbox_file_read(package, path, max_bytes, device),
+        _ => bail!("Unsupported platform for sandbox-file-read: {}", platform),
+    }
+}
+
+pub fn harmony_sandbox_push(
+    bundle: &str,
+    local: &str,
+    remote: &str,
+    device: Option<&str>,
+) -> Result<()> {
+    harmony::sandbox_file_push(bundle, local, remote, device)
+}
+
+pub fn harmony_sandbox_pull(
+    bundle: &str,
+    remote: &str,
+    local: &str,
+    device: Option<&str>,
+) -> Result<()> {
+    harmony::sandbox_file_pull(bundle, remote, local, device)
+}
+
+pub fn harmony_arkweb(
+    socket: Option<&str>,
+    port: u16,
+    close: bool,
+    device: Option<&str>,
+) -> Result<()> {
+    if close {
+        let Some(socket) = socket else {
+            bail!("--socket is required with --close");
+        };
+        harmony::arkweb_close(socket, port, device)
+    } else {
+        harmony::arkweb_inspect(socket, port, device)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn harmony_test(
+    bundle: &str,
+    module: &str,
+    runner: &str,
+    class: Option<&str>,
+    not_class: Option<&str>,
+    timeout_ms: Option<u64>,
+    dry_run: bool,
+    device: Option<&str>,
+) -> Result<()> {
+    harmony::run_tests(
+        bundle, module, runner, class, not_class, timeout_ms, dry_run, device,
+    )
 }
 
 // -- Performance commands (Android-only) --------------------------------------
@@ -950,21 +1047,4 @@ pub fn perf_crashes(package: Option<&str>, lines: usize, device: Option<&str>) -
 /// Detailed frame rendering stats (gfxinfo framestats) for a package.
 pub fn perf_framestats(package: &str, device: Option<&str>) -> Result<()> {
     android::perf_framestats(package, device)
-}
-
-// -- Helpers ------------------------------------------------------------------
-
-/// Write raw bytes to a file, or encode as base64 and print to stdout.
-fn write_or_base64(output: Option<&str>, data: &[u8]) -> Result<()> {
-    if let Some(path) = output {
-        std::fs::write(path, data)?;
-        eprintln!("Screenshot saved to: {}", path);
-    } else {
-        let b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            data,
-        );
-        println!("{}", b64);
-    }
-    Ok(())
 }

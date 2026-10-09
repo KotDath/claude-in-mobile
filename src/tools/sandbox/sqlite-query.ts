@@ -1,4 +1,5 @@
 import { validatePackageName } from "../../utils/sanitize.js";
+import { buildDeviceShellCommand } from "../../utils/device-shell.js";
 import { truncateOutput } from "../../utils/truncate.js";
 import { defineTool, z } from "../define-tool.js";
 import { deviceIdField } from "../common-schema.js";
@@ -22,14 +23,13 @@ export const sandboxSqliteQueryTool = defineTool({
     package: z.string().describe("App package name, e.g. com.example.app"),
     database: z.string().describe('Database filename, e.g. "app.db" or "mydata.sqlite"'),
     query: z.string().describe("SQL query to execute. Only SELECT and PRAGMA are allowed."),
-    root: z.enum(["config", "cache", "data"]).optional().describe("Aurora sandbox root (default: data)"),
     platform: androidPlatformEnum,
     deviceId: deviceIdField,
   }),
   handler: async (args, ctx) => {
     const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-    if (platform !== "android" && platform !== "aurora") {
-      return errorResult("sandbox_sqlite_query is available on Android and Aurora.");
+    if (platform !== "android") {
+      return errorResult("sandbox_sqlite_query is only available on Android.");
     }
 
     const pkg = args.package;
@@ -41,53 +41,47 @@ export const sandboxSqliteQueryTool = defineTool({
     const query = args.query;
     validateSqlQuery(query);
 
-    if (platform === "aurora") {
-      const result = ctx.deviceManager.getAuroraClient().execute([
-        "sandbox", "sqlite", pkg, args.root ?? "data", rawDb, query,
-      ]);
-      return textResult(truncateOutput(JSON.stringify(result, null, 2), { maxChars: 20000, maxLines: 500 }));
-    }
-
-    // Sanitize the query for safe shell quoting (single-quote based).
-    // Escape single quotes inside the query by ending the string, adding \',
-    // then starting a new string: ' -> '\''
-    const shellSafeQuery = query.replace(/'/g, "'\\''");
 
     const dbRelPath = `databases/${rawDb}`;
     const dbAbsPath = `/data/data/${pkg}/databases/${rawDb}`;
 
     // Try relative path via run-as first; fall back to absolute path.
     let output: string | undefined;
-    let lastError = "";
+    let unavailable = false;
 
     for (const dbPath of [dbRelPath, dbAbsPath]) {
       try {
-        output = ctx.deviceManager.shell(`run-as ${pkg} sqlite3 ${dbPath} '${shellSafeQuery}'`, "android", deviceId);
+        output = ctx.deviceManager.shell(
+          buildDeviceShellCommand([
+            "run-as",
+            pkg,
+            "sqlite3",
+            "-readonly",
+            dbPath,
+            query,
+          ]),
+          "android",
+          deviceId,
+        );
         if (!isRunAsFailure(output)) break;
-        // Treat run-as failure from the relative path attempt and try absolute.
-        lastError = output;
-        output = undefined;
+        return errorResult(runAsUnavailableHint(pkg));
       } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
-        if (isRunAsFailure(lastError)) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (isRunAsFailure(message)) {
           return errorResult(runAsUnavailableHint(pkg));
         }
-        // sqlite3 might not be found on the device — provide helpful message.
-        if (lastError.toLowerCase().includes("not found") || lastError.toLowerCase().includes("no such file")) {
-          return errorResult(
-            `sqlite3 is not available on this device or the database file was not found.\n\n` +
-              `Tried paths:\n  ${dbRelPath}\n  ${dbAbsPath}\n\n` +
-              "sqlite3 is pre-installed on most Android emulators but may be absent on physical devices.\n" +
-              `Error: ${lastError}`,
-          );
-        }
-        // Continue to try the next path.
+        unavailable = message.toLowerCase().includes("not found") ||
+          message.toLowerCase().includes("no such file");
       }
     }
 
-    if (!output) {
-      if (isRunAsFailure(lastError)) return errorResult(runAsUnavailableHint(pkg));
-      return errorResult(`Query failed: ${lastError}`);
+    if (output === undefined) {
+      if (unavailable) {
+        return errorResult(
+          "sqlite3 is unavailable or the sandbox database was not found.",
+        );
+      }
+      return errorResult("Sandbox query failed.");
     }
 
     if (isRunAsFailure(output)) return errorResult(runAsUnavailableHint(pkg));

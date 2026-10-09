@@ -1,28 +1,50 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { z } from "zod";
 
-import { registerTools, freezeRegistry } from "./tools/registry.js";
+
+import {
+  assertToolsAvailable,
+  freezeRegistry,
+  registerTools,
+} from "./tools/registry.js";
 import type { ToolDefinition } from "./tools/registry.js";
 import { createToolContext, MAX_RECURSION_DEPTH } from "./tools/context.js";
 import { MobileError } from "./errors.js";
 import { getGlobalMetrics } from "./utils/metrics.js";
-import { VALID_PROFILES, type MobileProfile } from "./profiles.js";
+import { sanitizeErrorMessage } from "./utils/sanitize.js";
+import { VALID_PROFILES } from "./profiles.js";
+import type { MobileProfile } from "./profiles.js";
 import { recordCall } from "./utils/anti-patterns.js";
-import { bootstrapKernel, bootstrapKernelAsync, type KernelHandle } from "./runtime/bootstrap.js";
-import type { ToolDefinition as PluginToolDefinition } from "@claude-in-mobile/plugin-api";
+import { bootstrapKernelAsync } from "./runtime/bootstrap.js";
+import type { KernelHandle } from "./runtime/bootstrap.js";
+import { DeviceManager } from "./device-manager.js";
+import type { ToolDefinition as PluginToolDefinition } from "@mcp-devices/plugin-api";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { captureStep } from "./tools/recorder-tools.js";
 import { resolveToolCall } from "./tools/registry.js";
 import { buildInstructions } from "./runtime/mcp-instructions.js";
 import { runCliIfRequested } from "./runtime/cli.js";
+import { runPlatformCommand } from "./runtime/platform-cli.js";
+import { runToolPluginCommand } from "./runtime/tool-plugin-cli.js";
 import { createMcpServer } from "./runtime/mcp-server.js";
+import { readPrivateFileSync } from "./utils/private-storage.js";
 
-// Read version from package.json — single source of truth
+
+// Read version from package.json — single source of truth.
+const packageMetadataSchema = z.object({
+  version: z.string().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/),
+}).passthrough();
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8")) as { version: string };
+const pkg = packageMetadataSchema.parse(
+  JSON.parse(readPrivateFileSync(
+    join(__dirname, "../package.json"),
+    1024 * 1024,
+    "package metadata",
+  ).toString("utf8")),
+);
 
 /** Retry config for transient errors. Only at depth=0 (top-level MCP calls). */
 const RETRY_CONFIG: Record<string, { maxAttempts: number; delayMs: number[] }> = {
@@ -83,8 +105,9 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
 const turboEnabled = process.env.MOBILE_TURBO === "true";
 if (turboEnabled) console.error("[turbo] MOBILE_TURBO=true — flow(run) turbo mode enabled by default");
 
-// Shared context (wired after handleTool is defined)
-const ctx = createToolContext(handleTool, { turboDefault: turboEnabled });
+// Assigned after kernel initialization. No default adapter graph is created:
+// the kernel plugins are the sole owners of platform resources.
+let ctx: ReturnType<typeof createToolContext>;
 
 // Resolve profile from MOBILE_PROFILE env for use in MCP instructions only —
 // the actual registration of meta tools / aliases / module metadata happens
@@ -94,15 +117,31 @@ const activeProfile: MobileProfile = VALID_PROFILES.includes(rawProfile as Mobil
   ? (rawProfile as MobileProfile)
   : "core";
 
-// Kernel bootstrap — see runtime/bootstrap.ts. `CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS=1`
-// opts in to filesystem discovery from `~/.claude-in-mobile/plugins/`.
-const enableExternal = process.env.CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS === "1";
-const kernel: KernelHandle = enableExternal
-  ? await bootstrapKernelAsync({ externalPlugins: true })
-  : bootstrapKernel({});
+// Configuration commands short-circuit before any kernel/server boot.
+runToolPluginCommand(process.argv);
+runPlatformCommand(process.argv);
+
+// Kernel bootstrap — see runtime/bootstrap.ts. `MCP_DEVICES_EXTERNAL_PLUGINS=1`
+// opts in to filesystem discovery from `~/.mcp-devices/plugins/`.
+const enableExternal = process.env.MCP_DEVICES_EXTERNAL_PLUGINS === "1";
+// Always async: enabled platforms shipped as separate packages
+// (e.g. @mcp-devices/plugin-aurora) are loaded via dynamic import.
+const kernel: KernelHandle = await bootstrapKernelAsync(
+  enableExternal ? { externalPlugins: true } : {}
+);
 await kernel.initAll();
 
+// Route tools through the kernel-backed DeviceManager: its adapters come from
+// the enabled platform plugins (slim base + on-demand platforms). Replaces the
+// placeholder ctx so `getAdapter(platform)` resolves installed platforms and
+// returns the actionable "install <platform>" error for disabled ones.
+ctx = createToolContext(handleTool, {
+  turboDefault: turboEnabled,
+  deviceManager: DeviceManager.fromKernel(kernel),
+});
+
 const kernelToolDefs: ToolDefinition[] = [];
+const kernelToolsByOwner = new Map<string, ToolDefinition[]>();
 for (const def of kernel.tools.values()) {
   const pluginDef: PluginToolDefinition = def;
   const mcpTool: Tool = {
@@ -110,13 +149,21 @@ for (const def of kernel.tools.values()) {
     description: pluginDef.description,
     inputSchema: pluginDef.inputSchema as Tool["inputSchema"],
   };
-  kernelToolDefs.push({
+  const legacyDef: ToolDefinition = {
     tool: mcpTool,
     handler: async (args) => pluginDef.handler(args),
-  });
+  };
+  kernelToolDefs.push(legacyDef);
+  const owner = kernel.toolOwners.get(pluginDef.name) ?? "kernel";
+  const owned = kernelToolsByOwner.get(owner) ?? [];
+  owned.push(legacyDef);
+  kernelToolsByOwner.set(owner, owned);
+}
+for (const [owner, defs] of kernelToolsByOwner) {
+  assertToolsAvailable(defs.map((def) => def.tool.name), owner);
+  registerTools(defs, owner);
 }
 if (kernelToolDefs.length > 0) {
-  registerTools(kernelToolDefs);
   console.error(`[kernel] registered ${kernelToolDefs.length} plugin tools: ${kernelToolDefs.map((d) => d.tool.name).join(", ")}`);
 }
 
@@ -125,7 +172,7 @@ if (kernelToolDefs.length > 0) {
 freezeRegistry();
 
 // --help / --version / --init short-circuit. Without these flags, agents that
-// probe `npx -y claude-in-mobile --help` (notably Gemini) cause the MCP server
+// probe `npx -y mcp-devices --help` (notably Gemini) cause the MCP server
 // to start its stdio JSON-RPC loop and block forever waiting on stdin, which
 // looks like a deadlock from the agent's side. See issue #44.
 runCliIfRequested(process.argv, pkg.version);
@@ -143,14 +190,9 @@ const { server, start } = createMcpServer({
 async function shutdown(signal: string): Promise<void> {
   console.error(`MCP server received ${signal}, shutting down...`);
   try {
-    await ctx.deviceManager.cleanup();
-  } catch (e) {
-    console.error("Cleanup error:", e);
-  }
-  try {
     await kernel.disposeAll();
   } catch (e) {
-    console.error("Kernel dispose error:", e);
+    console.error("Kernel dispose error:", sanitizeErrorMessage(e));
   }
   process.exit(0);
 }
@@ -164,6 +206,6 @@ process.stdin.on("close", () => shutdown("stdin-close"));
 void server;
 
 start().catch((error) => {
-  console.error("Fatal error:", error);
+  console.error("Fatal error:", sanitizeErrorMessage(error));
   process.exit(1);
 });

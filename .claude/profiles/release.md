@@ -64,15 +64,53 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
    - publish-npm job должен иметь `id-token: write` permission, если
      `npm publish --provenance` используется. См. 3.11.2.
 
-### Стадия 2 — Версии и манифесты (4 файла — обязательно ВСЕ)
+### Стадия 2 — Версии и манифесты (23 поля — обязательно ВСЕ)
 
-`.github/workflows/release.yml` сверяет 4 версии и провалит job
-`verify-plugin-versions` если хоть одна не совпадает:
+`.github/workflows/release.yml` job `verify-plugin-versions` сверяет **23**
+версии с тегом и провалит релиз (→ `publish-npm` **skipped**, npm не выйдет)
+если хоть одна не совпадает. 6 top-level манифеста:
 
 - [ ] `package.json` `"version"`
 - [ ] `cli/Cargo.toml` `version = "..."`
 - [ ] `.claude-plugin/marketplace.json` `plugins[0].version`
+- [ ] `.grok-plugin/marketplace.json` `plugins[0].version`
 - [ ] `cli/plugin/.claude-plugin/plugin.json` `version`
+- [ ] `cli/plugin/.grok-plugin/plugin.json` `version`
+
+**+ 8 scoped plugin-пакетов** (mcp-devices edition — их легко забыть, именно так
+сломался 4.0.1: 4 манифеста забампили, scoped-плагины остались на предыдущей
+версии, `verify-plugin-versions` упал, npm publish пропущен, homebrew/GitHub уже
+ушли на новую версию → десинк каналов). Каждый `packages/<p>/package.json` `.version`
+обязан == тег:
+
+- [ ] `packages/plugin-android/package.json`
+- [ ] `packages/plugin-ios/package.json`
+- [ ] `packages/plugin-web/package.json`
+- [ ] `packages/plugin-desktop/package.json`
+- [ ] `packages/plugin-aurora/package.json`
+- [ ] `packages/plugin-harmony/package.json`
+- [ ] `packages/plugin-debug/package.json`
+- [ ] `packages/plugin-all/package.json`
+
+**+ 9 runtime plugin-манифестов**. Их `version` виден потребителям через
+plugin registry и тоже обязан == тег:
+
+- [ ] `packages/plugin-android/src/index.ts`
+- [ ] `packages/plugin-ios/src/index.ts`
+- [ ] `packages/plugin-web/src/index.ts`
+- [ ] `packages/plugin-desktop/src/index.ts`
+- [ ] `packages/plugin-aurora/src/index.ts`
+- [ ] `packages/plugin-harmony/src/index.ts`
+- [ ] `packages/plugin-debug/src/plugin.ts`
+- [ ] `src/plugins/builtin-tools/index.ts`
+- [ ] `src/plugins/repl/index.ts`
+
+
+Одной командой:
+`for p in android ios web desktop aurora harmony debug all; do jq --arg v "X.Y.Z" '.version=$v' packages/plugin-$p/package.json > /tmp/pp && mv /tmp/pp packages/plugin-$p/package.json; done`
+
+(`packages/plugin-api/package.json` — НЕ трогать, версионируется независимо,
+CI его исключает.)
 
 После bump-а: синхронизировать lockfile-ы.
 
@@ -103,13 +141,14 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
   optional-dep ветки других платформ), восстановить postinstall-симлинк
   `node_modules/claude-in-mobile`, и прогнать `npm ci` на чистом клоне
   (`git clone --depth 1 file://… /tmp/ci-sim && cd /tmp/ci-sim && npm ci`).
-- [ ] **После ЛЮБОГО `npm install` (включая version-бамп):** проверить
-  что lock сохранил linux-ветку optional deps sharp:
-  `grep -c '@emnapi/runtime' package-lock.json` ≥ 4. macOS-локальный
-  `npm ci` это НЕ ловит (linux-ветка не нужна на macOS) — ломается
-  только ubuntu CI (publish-npm/lint). Хронический класс: ударил
+- [ ] **После ЛЮБОГО `npm install` (включая version-бамп):** проверить,
+  что lock сохранил минимум четыре linux-ветки optional deps sharp:
+  `node -e 'const p=require("./package-lock.json").packages;const n=Object.keys(p).filter(k=>k.startsWith("node_modules/@img/sharp-linux"));if(n.length<4)throw Error("missing sharp linux optional deps: "+n.length)'`.
+  macOS-локальный `npm ci` это НЕ ловит (linux-ветки не нужны на macOS) —
+  ломается только ubuntu CI (publish-npm/lint). Хронический класс: ударил
   3.12.0 И 3.13.0. Инкрементальный `npm install` на macOS прунит
-  linux-only entries; только полный rebuild их возвращает.
+  linux-only entries; только полный rebuild их возвращает. Старый
+  `@emnapi/runtime` count больше не является надёжным proxy начиная с sharp 0.35.
 
 - [ ] `npm run build` — zero TypeScript errors. Если падает на
   `@claude-in-mobile/plugin-api` — это регрессия workspace build script
@@ -118,7 +157,7 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
   падения (например, vite-resolve в store-tools) допустимы при условии
   что они уже были на main до релиза. Зафиксировать в report.
 - [ ] `cd cli && cargo build --release` — чисто.
-- [ ] `cd cli && cargo test --lib` — все Rust тесты зелёные.
+- [ ] `cd cli && cargo test --lib && cargo test --test setup_grok && cargo test --test repl_observability && cargo test --test repl_live_tui && cargo test --test harmony_cli` — все Rust тесты зелёные.
 
 ### Стадия 5 — Smoke-тесты бинарей (защита от регрессий типа #43, #44)
 
@@ -192,7 +231,7 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
 | Job                       | Что делает                          | Что может упасть                              |
 |---------------------------|--------------------------------------|------------------------------------------------|
 | build (arm64, x86_64)     | `cargo build --release`              | Rust compile error                             |
-| verify-plugin-versions    | сверка 4 манифестов                  | Не bump-нули один из манифестов (стадия 2)     |
+| verify-plugin-versions    | сверка 23 версий/манифестов          | Не bump-нули одну из версий или манифестов      |
 | release                   | создаёт GitHub Release с tar.gz      | Permissions                                    |
 | publish-npm               | `npm publish --provenance`           | Build script / id-token permission (3.11.1-2)  |
 | update-homebrew           | патчит Formula в внешнем tap         | `HOMEBREW_TAP_TOKEN` истёк                     |
@@ -208,12 +247,19 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
 - [ ] **GitHub:** `gh release view vX.Y.Z --json assets` — 2 ассета
   (darwin-arm64 + darwin-x86_64), размер 3-9 MB каждый. Если ~20 MB —
   это случайно собрали Node-бандл, удалить релиз и пересобрать.
-- [ ] **npm:** `npm view claude-in-mobile@X.Y.Z version` — версия
-  опубликована. `npm view claude-in-mobile dist-tags` — `latest` поднят
+- [ ] **npm:** `npm view mcp-devices@X.Y.Z version` — версия
+  опубликована. `npm view mcp-devices dist-tags` — `latest` поднят
   на новую версию.
-- [ ] **Homebrew:** `brew update && brew upgrade claude-in-mobile` —
-  переходит на новую версию. `claude-in-mobile --version` → `X.Y.Z`.
-  Если brew просит trust — `brew trust alexgladkov/claude-in-mobile`.
+- [ ] **Homebrew (unified tap `AlexGladkov/homebrew-tap`):**
+  `brew update && brew upgrade alexgladkov/tap/mcp-devices` —
+  переходит на новую версию. `mcp-devices --version` → `X.Y.Z`.
+  Первая установка: `brew install alexgladkov/tap/mcp-devices`.
+  Старые установки из `AlexGladkov/homebrew-claude-in-mobile` не мигрируют
+  автоматически: `oldname` не является Formula DSL, а cross-tap rename не
+  поддерживается через `formula_renames.json`. Переустановить из unified tap;
+  каноническая формула сохраняет бинарный alias `claude-in-mobile`.
+  Формула лежит в КОРНЕ tap (`mcp-devices.rb`), не в `Formula/`.
+  Если brew просит trust — `brew trust alexgladkov/tap`.
   Если `--version` показывает старую версию при обновлённом Cellar —
   проверить `ls -la $(which claude-in-mobile)`: npm-g симлинк может
   перекрывать brew-бинарь (тот же prefix); обновить и npm-g копию.
@@ -253,7 +299,7 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
 1. **Open issues — гейт релиза.** Если есть отчёт пользователя на
    текущей или предыдущей версии — релиз не выходит, пока он не
    разобран. Это причина появления профиля.
-2. **Версии в 4 файлах, всегда.** `verify-plugin-versions` — наш страж.
+2. **Версии в 14 полях, всегда.** `verify-plugin-versions` — наш страж.
 3. **Smoke runtime ≠ tsc/vitest.** Runtime smoke (`--help`, `import()`,
    binary spawn) ловит классы багов которые не видны на этапе
    компиляции и unit-тестов. Класс #43 (ESM) и класс #44 (deadlock на

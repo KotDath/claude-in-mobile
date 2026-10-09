@@ -2,23 +2,42 @@
 export type {
   CorePlatformAdapter,
   AppManagementAdapter,
+  AppInventoryAdapter,
   PermissionAdapter,
   ShellAdapter,
+  FileTransferAdapter,
+  UrlOpeningAdapter,
   SyncScreenshotAdapter,
+  PerformanceTraceAdapter,
+  PerformanceTraceStartOptions,
+  PerformanceTraceHandle,
+  PerformanceTraceCapture,
+  PerformanceTraceSummary,
+  PerformanceTraceFrameStats,
+  PerformanceTracePreset,
+  PerformanceTraceFormat,
+  HeapSnapshotAdapter,
+  HeapSnapshotOptions,
+  HeapSnapshotCapture,
+  HeapSnapshotSummary,
+  HeapSnapshotFormat,
   PlatformAdapter,
 } from "./platform-adapter.js";
 
 // Type guards
 export {
   hasAppManagement,
+  hasAppInventory,
   hasPermissions,
   hasShell,
+  hasFileTransfer,
+  hasUrlOpening,
   hasSyncScreenshot,
+  hasPerformanceTrace,
+  requirePerformanceTrace,
+  hasHeapSnapshot,
+  requireHeapSnapshot,
 } from "./platform-adapter.js";
 
 // Concrete adapters
-export { AndroidAdapter } from "./android-adapter.js";
-export { IosAdapter } from "./ios-adapter.js";
-export { DesktopAdapter } from "./desktop-adapter.js";
-export { AuroraAdapter } from "./aurora-adapter.js";
-export { BrowserAdapter } from "./browser-adapter.js";
+// AuroraAdapter moved to @mcp-devices/plugin-aurora (4.0.0 physical split).

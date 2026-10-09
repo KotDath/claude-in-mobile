@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * claude-in-mobile-lite — lightweight MCP server for small local LLMs.
+ * mcp-devices-lite — lightweight MCP server for small local LLMs.
  *
  * 12 atomic tools, ~600 tokens schema overhead.
  * No meta-dispatch, no hints, no diff, no recorder, no hidden modules.
@@ -14,9 +14,11 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { MobileError } from "claude-in-mobile/errors";
-import { createLiteDeviceManager } from "./context.js";
-import { createLiteTools, type LiteToolDefinition } from "./tools/definitions.js";
+import { MobileError } from "mcp-devices/errors";
+import { sanitizeErrorMessage } from "mcp-devices/utils/sanitize";
+import { createLiteDeviceContext } from "./context.js";
+import { createLiteTools } from "./tools/definitions.js";
+import type { LiteToolDefinition } from "./tools/definitions.js";
 import { truncateResponse, formatLiteError, MAX_RESPONSE_CHARS } from "./tools/formatter.js";
 
 const VERSION = "1.0.0";
@@ -24,19 +26,19 @@ const VERSION = "1.0.0";
 // ============ CLI flags ============
 
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
-  console.log(`claude-in-mobile-lite v${VERSION}`);
+  console.log(`mcp-devices-lite v${VERSION}`);
   process.exit(0);
 }
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-  console.log(`claude-in-mobile-lite v${VERSION}
+  console.log(`mcp-devices-lite v${VERSION}
 Lightweight MCP server for local LLMs (Llama 3, Mistral, Phi-3, Gemma).
 
 Usage:
-  claude-in-mobile-lite              Start MCP server (stdio)
-  claude-in-mobile-lite --init <client>  Generate MCP config snippet
-  claude-in-mobile-lite --version    Show version
-  claude-in-mobile-lite --help       Show this help
+  mcp-devices-lite              Start MCP server (stdio)
+  mcp-devices-lite --init <client>  Generate MCP config snippet
+  mcp-devices-lite --version    Show version
+  mcp-devices-lite --help       Show this help
 
 Supported --init clients: claude-code, cursor, opencode
 
@@ -56,7 +58,7 @@ if (initIndex !== -1) {
       mcp: {
         mobile: {
           type: "local",
-          command: ["npx", "-y", "claude-in-mobile-lite"],
+          command: ["npx", "-y", "mcp-devices-lite"],
           enabled: true,
         },
       },
@@ -65,7 +67,7 @@ if (initIndex !== -1) {
       mcpServers: {
         mobile: {
           command: "npx",
-          args: ["-y", "claude-in-mobile-lite"],
+          args: ["-y", "mcp-devices-lite"],
         },
       },
     },
@@ -73,14 +75,14 @@ if (initIndex !== -1) {
       mcpServers: {
         mobile: {
           command: "npx",
-          args: ["-y", "claude-in-mobile-lite"],
+          args: ["-y", "mcp-devices-lite"],
         },
       },
     },
   };
 
   if (!client || !LITE_CONFIGS[client]) {
-    console.error(`Usage: claude-in-mobile-lite --init <client>`);
+    console.error(`Usage: mcp-devices-lite --init <client>`);
     console.error(`Supported clients: ${Object.keys(LITE_CONFIGS).join(", ")}`);
     process.exit(1);
   }
@@ -90,8 +92,8 @@ if (initIndex !== -1) {
 
 // ============ Server setup ============
 
-// Create lite device manager (3 adapters: Android, iOS, Desktop)
-const deviceManager = createLiteDeviceManager();
+// Create lite kernel and device manager (3 adapters: Android, iOS, Desktop)
+const { deviceManager, dispose } = await createLiteDeviceContext();
 
 // Create 12 atomic tools
 const liteTools = createLiteTools();
@@ -174,7 +176,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function shutdown(signal: string): Promise<void> {
   console.error(`Lite MCP server received ${signal}, shutting down...`);
   try {
-    await deviceManager.cleanup();
+    await dispose();
   } catch {}
   process.exit(0);
 }
@@ -192,6 +194,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  console.error("Fatal error:", sanitizeErrorMessage(error));
   process.exit(1);
 });

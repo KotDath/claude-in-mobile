@@ -10,7 +10,7 @@ const { meta, aliases } = createMetaTool({
   extraSchema: {
     platform: {
       type: "string",
-      enum: ["android", "ios", "aurora"],
+      enum: ["android", "ios"],
       description: "Target platform. If not specified, uses the active target.",
     },
     latitude: {

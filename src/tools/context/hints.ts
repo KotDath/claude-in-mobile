@@ -7,10 +7,11 @@ import { DeviceManager } from "../../device-manager.js";
 import {
   parseUiHierarchy,
   desktopHierarchyToUiElements,
+  harmonyHierarchyToUiElements,
   diffUiElements,
   suggestNextActions,
   UiElement,
-} from "../../adb/ui-parser.js";
+} from "../../ui-tree/ui-parser.js";
 import { iosTreeToUiElements } from "./ios-helpers.js";
 import { getCachedElements, setCachedElements } from "./shared-state.js";
 
@@ -34,9 +35,8 @@ export function createGenerateActionHints(deviceManager: DeviceManager, options?
     let afterElements: UiElement[] = [];
     try {
       afterElements = await fetchUiElements(deviceManager, currentPlatform, turbo);
-    } catch (hintError: any) {
-      const reason = hintError?.message ?? "unknown error";
-      return `\n--- Hints ---\nUnable to fetch UI state for hints: ${reason}`;
+    } catch {
+      return "\n--- Hints ---\nUnable to fetch UI state for hints.";
     }
 
     // Turbo adaptive retry: if UI tree unchanged, wait 100ms and retry once
@@ -52,9 +52,18 @@ export function createGenerateActionHints(deviceManager: DeviceManager, options?
       }
     }
 
-    setCachedElements(currentPlatform, afterElements);
+    // Cache guard: never overwrite a previously-good cache with an empty read.
+    // A single failed/degraded WDA fetch used to write `[]` here, which poisoned
+    // `beforeElements` for every subsequent input and made hints permanently
+    // report "No UI elements detected." on iOS. The invariant is now also
+    // enforced centrally in SharedState.setCachedElements (so the
+    // getElementsForPlatform writers below are covered too); this explicit
+    // guard is kept as belt-and-suspenders and to skip the call entirely.
+    if (afterElements.length > 0) {
+      setCachedElements(currentPlatform, afterElements);
+    }
 
-    if (beforeElements.length === 0 && afterElements.length === 0) {
+    if (afterElements.length === 0) {
       return "\n--- Hints ---\nNo UI elements detected.";
     }
 
@@ -94,6 +103,9 @@ async function fetchUiElements(
     const json = await deviceManager.getUiHierarchy("ios");
     const tree = JSON.parse(json);
     return iosTreeToUiElements(tree);
+  } else if (currentPlatform === "harmony") {
+    const json = await deviceManager.getUiHierarchyAsync("harmony", undefined, turbo);
+    return harmonyHierarchyToUiElements(json);
   } else if (currentPlatform === "desktop") {
     const text = await deviceManager.getUiHierarchyAsync("desktop");
     return desktopHierarchyToUiElements(text);
@@ -120,6 +132,11 @@ export function createGetElementsForPlatform(deviceManager: DeviceManager, optio
       const tree = JSON.parse(json);
       const elements = iosTreeToUiElements(tree);
       setCachedElements("ios", elements);
+      return elements;
+    } else if (plat === "harmony") {
+      const json = await deviceManager.getUiHierarchyAsync("harmony", undefined, turbo);
+      const elements = harmonyHierarchyToUiElements(json);
+      setCachedElements("harmony", elements);
       return elements;
     } else if (plat === "desktop") {
       const text = await deviceManager.getUiHierarchyAsync("desktop");

@@ -1,4 +1,5 @@
-import { validatePackageName, validatePath, sanitizeForShell } from "../../utils/sanitize.js";
+import { validatePackageName, validateSandboxPath } from "../../utils/sanitize.js";
+import { buildDeviceShellCommand } from "../../utils/device-shell.js";
 import { truncateOutput } from "../../utils/truncate.js";
 import { defineTool, z } from "../define-tool.js";
 import { deviceIdField } from "../common-schema.js";
@@ -10,9 +11,6 @@ import {
   looksLikeBinary,
   runAsUnavailableHint,
 } from "./helpers.js";
-import { randomBytes } from "crypto";
-import { readFileSync, unlinkSync } from "fs";
-import { tmpdir } from "os";
 
 export const sandboxFileReadTool = defineTool({
   name: "sandbox_file_read",
@@ -31,58 +29,44 @@ export const sandboxFileReadTool = defineTool({
       .number()
       .optional()
       .describe("Maximum characters of file content to return (default: 10000, max: 50000)."),
-    root: z.enum(["config", "cache", "data"]).optional().describe("Aurora sandbox root (default: data)"),
     platform: androidPlatformEnum,
     deviceId: deviceIdField,
   }),
   handler: async (args, ctx) => {
     const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-    if (platform !== "android" && platform !== "aurora") {
-      return errorResult("sandbox_file_read is available on Android and Aurora.");
+    if (platform !== "android") {
+      return errorResult("sandbox_file_read is only available on Android.");
     }
 
     const pkg = args.package;
     validatePackageName(pkg);
 
-    if (platform === "aurora") {
-      validatePath(args.path, "path");
-      const output = `${tmpdir()}/cim_aurora_sandbox_${randomBytes(8).toString("hex")}`;
-      try {
-        ctx.deviceManager.getAuroraClient().execute(["sandbox", "pull", pkg, args.root ?? "data", args.path, output]);
-        const content = readFileSync(output);
-        if (content.includes(0)) return textResult(`File "${args.path}" appears to be binary. Use sandbox(action:'file_pull') to save it.`);
-        return textResult(truncateOutput(content.toString("utf-8"), { maxChars: Math.min(Math.max(1, args.maxBytes ?? 10_000), 50_000), maxLines: 1000 }));
-      } finally {
-        try { unlinkSync(output); } catch {}
-      }
-    }
-
-    const rawPath = args.path;
-    validatePath(rawPath, "path");
-    const safePath = sanitizeForShell(rawPath);
-    if (safePath.length === 0) {
-      return errorResult("Invalid path after sanitization.");
-    }
+    const path = args.path;
+    validateSandboxPath(path);
 
     const maxBytes = Math.min(Math.max(1, args.maxBytes ?? 10_000), 50_000);
 
     let content: string;
     try {
-      content = ctx.deviceManager.shell(`run-as ${pkg} cat ${safePath}`, "android", deviceId);
+      content = ctx.deviceManager.shell(
+        buildDeviceShellCommand(["run-as", pkg, "cat", path]),
+        "android",
+        deviceId,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
       if (msg.toLowerCase().includes("no such file")) {
-        return errorResult(`File not found: "${safePath}" in sandbox of "${pkg}".`);
+        return errorResult("Sandbox file was not found.");
       }
-      return errorResult(`Failed to read file: ${msg}`);
+      return errorResult("Failed to read sandbox file.");
     }
 
     if (isRunAsFailure(content)) return errorResult(runAsUnavailableHint(pkg));
 
     if (looksLikeBinary(content)) {
       return textResult(
-        `File "${safePath}" in "${pkg}" appears to be a binary file and cannot be displayed as text.\n\n` +
+        `File "${path}" in "${pkg}" appears to be a binary file and cannot be displayed as text.\n\n` +
           "If this is a SQLite database, use sandbox(action:'sqlite_query') instead.",
       );
     }

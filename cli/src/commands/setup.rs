@@ -2,17 +2,26 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use crate::cli::SetupCommands;
+use crate::utils::private_state::read_bounded_file;
 
-const SKILL_NAME: &str = "claude-in-mobile";
-const SKILL_MD: &str = include_str!("../../plugin/skills/claude-in-mobile/SKILL.md");
+const SKILL_NAME: &str = "mcp-devices";
+const SKILL_MD: &str = include_str!("../../plugin/skills/mcp-devices/SKILL.md");
 const PLATFORM_SUPPORT_MD: &str =
-    include_str!("../../plugin/skills/claude-in-mobile/references/platform-support.md");
+    include_str!("../../plugin/skills/mcp-devices/references/platform-support.md");
+const CORE_MD: &str = include_str!("../../plugin/skills/mcp-devices/references/core.md");
+const ANDROID_ONLY_MD: &str =
+    include_str!("../../plugin/skills/mcp-devices/references/android-only.md");
+const DESKTOP_MD: &str = include_str!("../../plugin/skills/mcp-devices/references/desktop.md");
+const MCP_JSON: &str = include_str!("../../plugin/.mcp.json");
+const GROK_PLUGIN_JSON: &str = include_str!("../../plugin/.grok-plugin/plugin.json");
+const CLAUDE_PLUGIN_JSON: &str = include_str!("../../plugin/.claude-plugin/plugin.json");
 
 pub fn run(command: SetupCommands) -> Result<()> {
     match command {
@@ -46,6 +55,11 @@ pub fn run(command: SetupCommands) -> Result<()> {
             global,
             force,
         } => cursor(local, global, force),
+        SetupCommands::Grok {
+            local,
+            global,
+            force,
+        } => grok(local, global, force),
     }
 }
 
@@ -115,6 +129,57 @@ fn cursor(local: bool, global: bool, force: bool) -> Result<()> {
     )
 }
 
+fn grok(local: bool, global: bool, force: bool) -> Result<()> {
+    let scope = install_scope(local, global);
+    let target_dir = match scope {
+        InstallScope::Local => project_root()?,
+        InstallScope::Global => home_dir()?,
+    }
+    .join(".grok")
+    .join("plugins")
+    .join(SKILL_NAME);
+
+    install_grok_plugin(&target_dir, force)?;
+
+    println!(
+        "Installed Grok plugin ({}) at {}\n{}",
+        scope_label(scope),
+        target_dir.display(),
+        grok_next_steps(scope)
+    );
+    Ok(())
+}
+
+fn install_grok_plugin(target_dir: &Path, force: bool) -> Result<()> {
+    let files: [(&[&str], &str); 8] = [
+        (&[".mcp.json"], MCP_JSON),
+        (&[".grok-plugin", "plugin.json"], GROK_PLUGIN_JSON),
+        (&[".claude-plugin", "plugin.json"], CLAUDE_PLUGIN_JSON),
+        (&["skills", SKILL_NAME, "SKILL.md"], SKILL_MD),
+        (&["skills", SKILL_NAME, "references", "core.md"], CORE_MD),
+        (
+            &["skills", SKILL_NAME, "references", "android-only.md"],
+            ANDROID_ONLY_MD,
+        ),
+        (
+            &["skills", SKILL_NAME, "references", "desktop.md"],
+            DESKTOP_MD,
+        ),
+        (
+            &["skills", SKILL_NAME, "references", "platform-support.md"],
+            PLATFORM_SUPPORT_MD,
+        ),
+    ];
+    for (parts, content) in files {
+        write_file_if_needed(
+            &append_parts(target_dir.to_path_buf(), parts),
+            content,
+            force,
+        )?;
+    }
+    Ok(())
+}
+
 fn install_agent_skill(
     agent_name: &str,
     local_parts: &[&str],
@@ -132,15 +197,10 @@ fn install_agent_skill(
 
     install_skill(&target_dir, force)?;
 
-    let scope_label = match scope {
-        InstallScope::Local => "project-local",
-        InstallScope::Global => "global",
-    };
-
     println!(
-        "Installed {} skill ({}) at {}\nRestart {}, then ask it to use the claude-in-mobile skill.",
+        "Installed {} skill ({}) at {}\nRestart {}, then ask it to use the mcp-devices skill.",
         agent_name,
-        scope_label,
+        scope_label(scope),
         target_dir.display(),
         agent_name
     );
@@ -164,6 +224,27 @@ fn install_scope(local: bool, global: bool) -> InstallScope {
     }
 }
 
+fn scope_label(scope: InstallScope) -> &'static str {
+    match scope {
+        InstallScope::Local => "project-local",
+        InstallScope::Global => "global",
+    }
+}
+
+fn grok_next_steps(scope: InstallScope) -> &'static str {
+    match scope {
+        // Project plugins are not auto-trusted; MCP stays inactive until trust.
+        InstallScope::Local => {
+            "Restart Grok, then trust and enable the plugin:\n  grok plugin install ./.grok/plugins/mcp-devices --trust\n  grok plugin enable mcp-devices"
+        }
+        // Global plugins land in Grok's auto-trusted area: on restart Grok will
+        // launch the bundled MCP server without a separate `--trust` step.
+        InstallScope::Global => {
+            "Heads up: this installs into Grok's auto-trusted area, so on restart Grok will automatically run the MCP server (npx -y mcp-devices).\nRestart Grok. If mcp-devices does not appear, run: grok plugin enable mcp-devices"
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum InstallScope {
     Local,
@@ -181,15 +262,28 @@ fn install_skill(target_dir: &Path, force: bool) -> Result<()> {
 }
 
 fn write_file_if_needed(path: &Path, content: &str, force: bool) -> Result<()> {
-    if let Ok(existing) = fs::read_to_string(path) {
-        if existing == content {
-            return Ok(());
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                bail!("Refusing to overwrite non-regular file: {}", path.display());
+            }
+            if metadata.len() <= content.len() as u64
+                && read_bounded_file(path, content.len() as u64 + 1, "setup target")?
+                    == content.as_bytes()
+            {
+                return Ok(());
+            }
+            if !force {
+                bail!(
+                    "Refusing to overwrite existing file: {}. Re-run with --force to replace it.",
+                    path.display()
+                );
+            }
         }
-        if !force {
-            bail!(
-                "Refusing to overwrite existing file: {}. Re-run with --force to replace it.",
-                path.display()
-            );
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to inspect file: {}", path.display()));
         }
     }
 
@@ -197,9 +291,25 @@ fn write_file_if_needed(path: &Path, content: &str, force: bool) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
-
-    fs::write(path, content)
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o644);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.custom_flags(0x0020_0000);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Failed to safely open file: {}", path.display()))?;
+    file.write_all(content.as_bytes())
         .with_context(|| format!("Failed to write file: {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("Failed to persist file: {}", path.display()))?;
     Ok(())
 }
 
@@ -241,4 +351,24 @@ fn env_var_path(name: &str) -> Option<PathBuf> {
     env::var_os(name)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_setup_write_refuses_symlink_targets() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.md");
+        let link = directory.path().join("SKILL.md");
+        fs::write(&target, "keep").unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(write_file_if_needed(&link, "replace", true).is_err());
+        assert_eq!(fs::read_to_string(target).unwrap(), "keep");
+    }
 }

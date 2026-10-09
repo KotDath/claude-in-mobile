@@ -13,10 +13,10 @@
  * src/device/proxies/.
  *
  * D9.1c split: desktop lifecycle and device selection extracted into
- *   - desktop-facade — launch/stop/cleanup/getClient/isRunning + browser accessor
- *   - device-facade  — listAll, setDevice, getActive, getTarget, target tracking
- * The orchestrator now only owns getAdapter() (with FIX #8 auto-detect),
- * legacy raw client accessors, and webview inspector caching.
+ *   - desktop-facade — launch/stop/getClient/isRunning + browser accessor
+ *   - device-facade — listAll, setDevice, getActive, getTarget, target tracking
+ * The orchestrator now only owns getAdapter() (with FIX #8 auto-detect)
+ * and legacy raw client accessors.
  *
  * Public API of `DeviceManager` and re-exported types (`Platform`,
  * `BuiltinPlatform`, `Device`, `KernelHandleView`, …) is unchanged so
@@ -26,32 +26,24 @@
  */
 
 import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
-import { AndroidAdapter } from "./adapters/android-adapter.js";
-import { IosAdapter } from "./adapters/ios-adapter.js";
-import { AuroraAdapter } from "./adapters/aurora-adapter.js";
-import { BrowserAdapter } from "./adapters/browser-adapter.js";
+import type { AdbClientLike, AuroraClientLike, BrowserAdapterLike, IosClientLike, WebViewInspectorLike } from "./adapters/contracts.js";
 
-import { AdbClient } from "./adb/client.js";
-import { IosClient } from "./ios/client.js";
-import { DesktopClient } from "./desktop/client.js";
-import type { AuroraClient } from "./aurora/index.js";
 import type { CompressOptions } from "./utils/image.js";
-import type { RawLaunchOptions } from "./desktop/types.js";
-import { WebViewInspector } from "./adb/webview.js";
+import type { DesktopClientLike, RawLaunchOptionsLike } from "./adapters/contracts.js";
 
 import type { Device, Platform } from "./platform-types.js";
 import { buildDefaultAdapters } from "./device/client-cache.js";
-import {
-  adaptersFromKernel,
-  type KernelHandleView,
-} from "./device/kernel-device-locator.js";
+import { adaptersFromKernel } from "./device/kernel-device-locator.js";
+import type { KernelHandleView } from "./device/kernel-device-locator.js";
 import { InputProxy } from "./device/proxies/input-proxy.js";
 import { AppProxy } from "./device/proxies/app-proxy.js";
 import { PermissionProxy } from "./device/proxies/permission-proxy.js";
 import { LogProxy } from "./device/proxies/log-proxy.js";
+import { FileTransferProxy } from "./device/proxies/file-transfer-proxy.js";
 import { ScreenProxy } from "./device/proxies/screen-proxy.js";
 import { DesktopFacade } from "./device/proxies/desktop-facade.js";
 import { DeviceFacade } from "./device/proxies/device-facade.js";
+import { sanitizeErrorMessage } from "./utils/sanitize.js";
 
 // Re-export platform types so the ~125 existing call sites that import
 // `Platform`, `Device`, `BuiltinPlatform`, etc. from "./device-manager.js"
@@ -67,16 +59,20 @@ export type { KernelHandleView } from "./device/kernel-device-locator.js";
 export interface DeviceManagerConfig {
   adapters: Map<Platform, CorePlatformAdapter>;
   activeTarget?: Platform;
+  /** Whether this manager, rather than a plugin kernel, owns adapter teardown. */
+  ownsAdapters?: boolean;
 }
 
 export class DeviceManager {
   private adapters: Map<Platform, CorePlatformAdapter>;
-  private webViewInspector?: WebViewInspector;
+  private readonly ownsAdapters: boolean;
+  private cleanupPromise?: Promise<void>;
 
   private readonly inputProxy: InputProxy;
   private readonly appProxy: AppProxy;
   private readonly permissionProxy: PermissionProxy;
   private readonly logProxy: LogProxy;
+  private readonly fileTransferProxy: FileTransferProxy;
   private readonly screenProxy: ScreenProxy;
   private readonly desktopFacade: DesktopFacade;
   private readonly deviceFacade: DeviceFacade;
@@ -89,17 +85,23 @@ export class DeviceManager {
     handle: KernelHandleView,
     activeTarget: Platform = "android",
   ): DeviceManager {
-    return new DeviceManager({ adapters: adaptersFromKernel(handle), activeTarget });
+    return new DeviceManager({
+      adapters: adaptersFromKernel(handle),
+      activeTarget,
+      ownsAdapters: false,
+    });
   }
 
   constructor(config?: DeviceManagerConfig) {
     let initialTarget: Platform = "android";
     if (config) {
       this.adapters = config.adapters;
+      this.ownsAdapters = config.ownsAdapters ?? true;
       initialTarget = config.activeTarget ?? "android";
     } else {
       const { adapters, envSeededTarget } = buildDefaultAdapters();
       this.adapters = adapters;
+      this.ownsAdapters = true;
       if (envSeededTarget) initialTarget = envSeededTarget;
     }
 
@@ -112,6 +114,7 @@ export class DeviceManager {
     this.appProxy = new AppProxy(resolver);
     this.permissionProxy = new PermissionProxy(resolver);
     this.logProxy = new LogProxy(resolver);
+    this.fileTransferProxy = new FileTransferProxy(resolver);
     this.screenProxy = new ScreenProxy(resolver);
   }
 
@@ -126,7 +129,13 @@ export class DeviceManager {
     const target = platform ?? this.deviceFacade.getCurrentPlatform();
     const adapter = this.adapters.get(target);
     if (!adapter) {
-      throw new Error(`Unknown platform: ${target}`);
+      const available = [...this.adapters.keys()].join(", ") || "none";
+      throw new Error(
+        `Platform '${target}' is not installed. ` +
+          `Enable it with \`mcp-devices install ${target}\` ` +
+          `(or set MCP_DEVICES_PLATFORMS=${target}). ` +
+          `Currently available: ${available}.`
+      );
     }
     if (target === "desktop" || target === "browser") return adapter;
     if (deviceId) return adapter;
@@ -153,16 +162,38 @@ export class DeviceManager {
 
   // ============ Desktop / Browser (delegates to DesktopFacade) ============
 
-  async launchDesktopApp(options: RawLaunchOptions): Promise<string> {
+  async launchDesktopApp(options: RawLaunchOptionsLike): Promise<string> {
     const msg = await this.desktopFacade.launch(options);
     this.deviceFacade.setTarget("desktop");
     return msg;
   }
 
   async stopDesktopApp(): Promise<void> { return this.desktopFacade.stop(); }
-  async cleanup(): Promise<void> { return this.desktopFacade.cleanup(this.webViewInspector); }
-  getBrowserAdapter(): BrowserAdapter { return this.desktopFacade.getBrowser(); }
-  getDesktopClient(): DesktopClient { return this.desktopFacade.getClient(); }
+  async cleanup(): Promise<void> {
+    if (!this.cleanupPromise) {
+      this.cleanupPromise = this.disposeOwnedAdapters();
+    }
+    return this.cleanupPromise;
+  }
+
+  private async disposeOwnedAdapters(): Promise<void> {
+    if (!this.ownsAdapters) return;
+
+    await Promise.all(
+      [...new Set(this.adapters.values())].map(async (adapter) => {
+        try {
+          await adapter.dispose?.();
+        } catch (error) {
+          console.error(
+            `Failed to dispose '${sanitizeErrorMessage(adapter.platform)}' adapter:`,
+            sanitizeErrorMessage(error),
+          );
+        }
+      }),
+    );
+  }
+  getBrowserAdapter(): BrowserAdapterLike { return this.desktopFacade.getBrowser(); }
+  getDesktopClient(): DesktopClientLike { return this.desktopFacade.getClient(); }
   isDesktopRunning(): boolean { return this.desktopFacade.isRunning(); }
 
   // ============ Screen ops (proxy) ============
@@ -255,6 +286,18 @@ export class DeviceManager {
     return this.appProxy.installApp(path, platform, deviceId);
   }
 
+  async listApps(platform?: Platform, deviceId?: string): Promise<string[]> {
+    return this.appProxy.listApps(platform, deviceId);
+  }
+
+  async uninstallApp(
+    packageOrBundleId: string,
+    platform?: Platform,
+    deviceId?: string,
+  ): Promise<string> {
+    return this.appProxy.uninstallApp(packageOrBundleId, platform, deviceId);
+  }
+
   // ============ Permission ops (proxy) ============
 
   grantPermission(packageOrBundleId: string, permission: string, platform?: Platform, deviceId?: string): string {
@@ -292,40 +335,71 @@ export class DeviceManager {
     return this.logProxy.getSystemInfo(platform, deviceId);
   }
 
+  // ============ File transfer ops (proxy) ============
+
+  async pushFile(
+    localPath: string,
+    remotePath: string,
+    platform?: Platform,
+    deviceId?: string,
+  ): Promise<string> {
+    return this.fileTransferProxy.pushFile(localPath, remotePath, platform, deviceId);
+  }
+
+  async pullFile(
+    remotePath: string,
+    localPath?: string,
+    platform?: Platform,
+    deviceId?: string,
+  ): Promise<string> {
+    return this.fileTransferProxy.pullFile(remotePath, localPath, platform, deviceId);
+  }
+
   // ============ Raw client accessors (legacy — prefer getAdapter + capability guards) ============
 
   /** @deprecated Use `getAdapter("android", deviceId)` + capability type guards from `adapters/platform-adapter.ts`. */
-  getAndroidClient(deviceId?: string): AdbClient {
-    const adapter = this.adapters.get("android");
-    if (!adapter || !(adapter instanceof AndroidAdapter)) {
-      throw new Error("Android adapter is not available in this configuration.");
+  getAndroidClient(deviceId?: string): AdbClientLike {
+    const adapter = this.adapters.get("android") as { getClient?: (deviceId?: string) => AdbClientLike } | undefined;
+    if (!adapter || typeof adapter.getClient !== "function") {
+      throw new Error("Android is not installed. Run `mcp-devices install android`.");
     }
     return adapter.getClient(deviceId);
   }
 
   /** @deprecated Use `getAdapter("ios", deviceId)` + capability type guards. */
-  getIosClient(deviceId?: string): IosClient {
-    const adapter = this.adapters.get("ios");
-    if (!adapter || !(adapter instanceof IosAdapter)) {
-      throw new Error("iOS adapter is not available in this configuration.");
+  getIosClient(deviceId?: string): IosClientLike {
+    const adapter = this.adapters.get("ios") as { getClient?: (deviceId?: string) => IosClientLike } | undefined;
+    if (!adapter || typeof adapter.getClient !== "function") {
+      throw new Error("iOS is not installed. Run `mcp-devices install ios`.");
     }
     return adapter.getClient(deviceId);
   }
 
-  /** @deprecated Use `getAdapter("aurora")` + capability type guards. */
-  getAuroraClient(): AuroraClient {
-    const adapter = this.adapters.get("aurora");
-    if (!adapter || !(adapter instanceof AuroraAdapter)) {
-      throw new Error("Aurora adapter is not available in this configuration.");
+  /**
+   * @deprecated Use `getAdapter("aurora")` + capability type guards.
+   *
+   * Aurora ships as the separate `@mcp-devices/plugin-aurora` package
+   * (4.0.0 physical split), so this resolves the client structurally via the
+   * adapter's `getClient()` rather than an `instanceof` on a bundled class.
+   */
+  getAuroraClient(): AuroraClientLike {
+    const adapter = this.adapters.get("aurora") as
+      | { getClient?: () => AuroraClientLike }
+      | undefined;
+    if (!adapter || typeof adapter.getClient !== "function") {
+      throw new Error(
+        "Aurora is not installed. Run `mcp-devices install aurora`."
+      );
     }
     return adapter.getClient();
   }
 
-  getWebViewInspector(): WebViewInspector {
-    if (!this.webViewInspector) {
-      this.webViewInspector = new WebViewInspector(this.getAndroidClient());
+  getWebViewInspector(): WebViewInspectorLike {
+    const adapter = this.adapters.get("android") as { getWebViewInspector?: () => WebViewInspectorLike } | undefined;
+    if (!adapter || typeof adapter.getWebViewInspector !== "function") {
+      throw new Error("Android is not installed. Run `mcp-devices install android`.");
     }
-    return this.webViewInspector;
+    return adapter.getWebViewInspector();
   }
 }
 

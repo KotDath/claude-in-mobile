@@ -14,7 +14,9 @@
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
+use crate::utils::process::{run_with_limits, terminal_safe};
 use anyhow::Result;
 
 // ── ANSI colour helpers ───────────────────────────────────────────────────────
@@ -38,23 +40,30 @@ fn section(title: &str) {
 
 // ── Utility helpers ───────────────────────────────────────────────────────────
 
-/// Run a command and capture its combined stdout, returning `None` on failure.
-fn run_output(program: &str, args: &[&str]) -> Option<String> {
-    Command::new(program)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+/// Run a command with bounded output, returning `None` on failure.
+fn run_command(program: &str, args: &[&str]) -> Option<std::process::Output> {
+    let mut command = Command::new(program);
+    command.args(args);
+    run_with_limits(
+        &mut command,
+        Duration::from_secs(10),
+        1024 * 1024,
+        "Dependency check",
+    )
+    .ok()
+    .filter(|output| output.status.success())
 }
 
-/// Run a command, returning `true` if it exits with status 0.
-fn run_ok(program: &str, args: &[&str]) -> bool {
-    Command::new(program)
-        .args(args)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// Run a command and capture its non-empty output stream.
+fn run_output(program: &str, args: &[&str]) -> Option<String> {
+    run_command(program, args).map(|output| {
+        let stdout = terminal_safe(&output.stdout).trim().to_owned();
+        if stdout.is_empty() {
+            terminal_safe(&output.stderr).trim().to_owned()
+        } else {
+            stdout
+        }
+    })
 }
 
 /// Locate a binary by trying `which` / `where` (cross-platform).
@@ -62,7 +71,7 @@ fn which(binary: &str) -> Option<PathBuf> {
     // Check explicit env-var overrides first.
     let env_candidates: &[&str] = match binary {
         "adb" => &["ADB_PATH"],
-        "audb" => &["AUDB_PATH"],
+        "hdc" => &["HDC_PATH"],
         "java" => &["JAVA_HOME"],
         _ => &[],
     };
@@ -113,14 +122,19 @@ fn check_android() -> bool {
                 l.split_whitespace().last().unwrap_or("?").to_owned()
             })
             .unwrap_or_else(|| "?".to_owned());
-        ok(&format!("adb found: {} (version {})", adb.display(), version));
+        ok(&format!(
+            "adb found: {} (version {})",
+            adb.display(),
+            version
+        ));
     } else {
         fail("adb not found — install Android SDK platform-tools");
         all_ok = false;
     }
 
     // ANDROID_HOME / ANDROID_SDK_ROOT
-    if let Some(p) = env_path_exists("ANDROID_HOME").or_else(|| env_path_exists("ANDROID_SDK_ROOT")) {
+    if let Some(p) = env_path_exists("ANDROID_HOME").or_else(|| env_path_exists("ANDROID_SDK_ROOT"))
+    {
         ok(&format!("ANDROID_HOME set: {}", p.display()));
     } else {
         fail("ANDROID_HOME not set");
@@ -155,7 +169,7 @@ fn check_ios() -> bool {
     }
 
     // xcrun simctl
-    if run_ok("xcrun", &["simctl", "list", "--json"]) {
+    if run_command("xcrun", &["simctl", "list", "--json"]).is_some() {
         ok("xcrun simctl available");
     } else {
         fail("xcrun simctl not available — check Xcode installation");
@@ -166,7 +180,11 @@ fn check_ios() -> bool {
     if let Some(appium) = which("appium") {
         let version = run_output(appium.to_str().unwrap_or("appium"), &["--version"])
             .unwrap_or_else(|| "?".to_owned());
-        ok(&format!("Appium found: {} ({})", appium.display(), version.trim()));
+        ok(&format!(
+            "Appium found: {} ({})",
+            appium.display(),
+            version.trim()
+        ));
     } else {
         fail("Appium not found — install: npm install -g appium");
         // Appium is optional for basic screenshot/tap flows; don't set all_ok = false
@@ -206,16 +224,8 @@ fn check_desktop() -> bool {
     let java_found = if let Ok(java_home) = env::var("JAVA_HOME") {
         let java_bin = Path::new(&java_home).join("bin").join("java");
         if java_bin.exists() {
-            let version = run_output(java_bin.to_str().unwrap_or("java"), &["-version"])
-                .or_else(|| {
-                    // java -version writes to stderr on many JDKs
-                    Command::new(&java_bin)
-                        .arg("-version")
-                        .output()
-                        .ok()
-                        .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_owned())
-                })
-                .unwrap_or_default();
+            let version =
+                run_output(java_bin.to_str().unwrap_or("java"), &["-version"]).unwrap_or_default();
             let ver_line = version.lines().next().unwrap_or("?");
             ok(&format!("JDK found: {} ({})", java_home, ver_line));
             true
@@ -229,12 +239,8 @@ fn check_desktop() -> bool {
     if !java_found {
         // Fall back to `java` on PATH
         if let Some(java) = which("java") {
-            let version = Command::new(&java)
-                .arg("-version")
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stderr).trim().to_owned())
-                .unwrap_or_default();
+            let version =
+                run_output(java.to_str().unwrap_or("java"), &["-version"]).unwrap_or_default();
             let ver_line = version.lines().next().unwrap_or("?");
             ok(&format!("JDK found: {} ({})", java.display(), ver_line));
         } else {
@@ -269,32 +275,39 @@ fn check_aurora() -> bool {
     let mut all_ok = true;
 
     // audb (Aurora debug bridge, analogous to adb)
-    if let Some(audb) = which("audb") {
-        let version = run_output(audb.to_str().unwrap_or("audb"), &["--version"])
+    if let Some(audb) = which("audb").or_else(|| which("audb-client")) {
+        let version = run_output(audb.to_str().unwrap_or("audb"), &["version"])
+            .or_else(|| run_output(audb.to_str().unwrap_or("audb"), &["--version"]))
             .unwrap_or_else(|| "?".to_owned());
-        let supported = regex::Regex::new(r"(?:^|\s)(\d+)\.(\d+)\.(\d+)")
-            .ok()
-            .and_then(|re| re.captures(&version))
-            .and_then(|caps| Some((caps.get(1)?.as_str().parse::<u64>().ok()?, caps.get(2)?.as_str().parse::<u64>().ok()?, caps.get(3)?.as_str().parse::<u64>().ok()?)))
-            .is_some_and(|v| v >= (0, 2, 0));
-        if supported {
-            ok(&format!("audb found: {} ({})", audb.display(), version.trim()));
-            if run_output(audb.to_str().unwrap_or("audb"), &["--json", "setup-status"]).is_some() {
-                ok("audb setup status is readable");
-            } else {
-                fail("audb setup-status failed");
-                all_ok = false;
-            }
-        } else {
-            fail(&format!("audb >=0.2.0 required, found: {}", version.trim()));
-            all_ok = false;
-        }
+        ok(&format!(
+            "audb found: {} ({})",
+            audb.display(),
+            version.trim()
+        ));
     } else {
-        fail("audb not found — install: cargo install audb-client --version 0.2.0, or set AUDB_PATH");
+        fail("audb-client not found — install: cargo install audb-client");
         all_ok = false;
     }
 
     all_ok
+}
+/// Returns `true` when the HarmonyOS Device Connector is available.
+fn check_harmony() -> bool {
+    section("HarmonyOS");
+    if let Some(hdc) = which("hdc") {
+        let version = run_output(hdc.to_str().unwrap_or("hdc"), &["--version"])
+            .or_else(|| run_output(hdc.to_str().unwrap_or("hdc"), &["version"]))
+            .unwrap_or_else(|| "?".to_owned());
+        ok(&format!(
+            "hdc found: {} ({})",
+            hdc.display(),
+            version.trim()
+        ));
+        true
+    } else {
+        fail("hdc not found — install the HarmonyOS SDK and set HDC_PATH");
+        false
+    }
 }
 
 /// Returns `true` if all *critical* Browser checks pass.
@@ -345,7 +358,13 @@ fn find_chrome() -> Option<PathBuf> {
     }
 
     // Linux / Windows binary names
-    for bin in &["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"] {
+    for bin in &[
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "chrome",
+    ] {
         if let Some(p) = which(bin) {
             return Some(p);
         }
@@ -365,11 +384,12 @@ pub fn run() -> Result<()> {
     let ios_ok = check_ios();
     let desktop_ok = check_desktop();
     let aurora_ok = check_aurora();
+    let harmony_ok = check_harmony();
     let browser_ok = check_browser();
 
     println!();
 
-    if android_ok && ios_ok && desktop_ok && aurora_ok && browser_ok {
+    if android_ok && ios_ok && desktop_ok && aurora_ok && harmony_ok && browser_ok {
         println!("{GREEN}All critical dependencies found.{RESET}");
         Ok(())
     } else {

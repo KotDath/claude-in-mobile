@@ -5,7 +5,6 @@ import { validatePackageName, validatePath } from "../utils/sanitize.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
-import { auroraAppCapabilityTools } from "./aurora-capability-tools.js";
 
 const commonFields = {
   platform: platformEnum,
@@ -20,7 +19,7 @@ export const appTools: ToolDefinition[] = [
       package: z
         .string()
         .describe(
-          "Package name (Android) or bundle ID (iOS), e.g., com.android.settings or com.apple.Preferences",
+          "App package or bundle ID (Android/iOS/HarmonyOS), e.g., com.android.settings or com.example.demo",
         ),
       ...commonFields,
     }),
@@ -36,7 +35,7 @@ export const appTools: ToolDefinition[] = [
     name: "app_stop",
     description: "Force stop an app",
     schema: z.object({
-      package: z.string().describe("Package name (Android) or bundle ID (iOS)"),
+      package: z.string().describe("App package or bundle ID (Android/iOS/HarmonyOS)"),
       ...commonFields,
     }),
     handler: async (args, ctx) => {
@@ -49,9 +48,9 @@ export const appTools: ToolDefinition[] = [
 
   defineTool({
     name: "app_install",
-    description: "Install APK (Android) or .app bundle (iOS)",
+    description: "Install APK (Android), .app bundle (iOS), RPM (Aurora), or HAP (HarmonyOS)",
     schema: z.object({
-      path: z.string().describe("Path to APK (Android) or .app bundle (iOS)"),
+      path: z.string().describe("Path to APK, .app bundle, RPM, or HAP"),
       ...commonFields,
     }),
     handler: async (args, ctx) => {
@@ -67,7 +66,7 @@ export const appTools: ToolDefinition[] = [
     description:
       "Force-stop then re-launch an app. Common pattern for clearing in-memory state without uninstall.",
     schema: z.object({
-      package: z.string().describe("Package name (Android) or bundle ID (iOS)"),
+      package: z.string().describe("App package or bundle ID (Android/iOS/HarmonyOS)"),
       delayMs: z
         .number()
         .default(500)
@@ -91,20 +90,29 @@ export const appTools: ToolDefinition[] = [
   }),
 
   defineTool({
-    name: "app_list",
-    description: "List installed apps (Aurora only)",
+    name: "app_uninstall",
+    description: "Uninstall an app by package name or bundle ID",
     schema: z.object({
-      platform: z.literal("aurora").optional(),
-      filter: z.string().optional(),
+      package: z.string().describe("App package or bundle ID"),
+      ...commonFields,
     }),
     handler: async (args, ctx) => {
-      const { platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-      if (platform !== "aurora") {
-        return textResult("list_apps is only available for Aurora OS.");
-      }
-      const packages = ctx.deviceManager.getAuroraClient().listPackages(args.filter);
-      return textResult(`Installed packages (${packages.length}):\n${packages.join("\n")}`);
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePackageName(args.package);
+      const result = await ctx.deviceManager.uninstallApp(args.package, platform, deviceId);
+      return textResult(result);
     },
   }),
-  ...auroraAppCapabilityTools,
+
+  defineTool({
+    name: "app_list",
+    description: "List installed apps on a platform with app inventory support",
+    schema: z.object(commonFields),
+    handler: async (args, ctx) => {
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const packages = await ctx.deviceManager.listApps(platform, deviceId);
+      const body = packages.length > 0 ? packages.join("\n") : "(none)";
+      return textResult(`Installed apps (${packages.length}):\n${body}`);
+    },
+  }),
 ];

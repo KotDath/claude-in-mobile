@@ -10,21 +10,23 @@
  */
 
 import type { CorePlatformAdapter } from "../../adapters/platform-adapter.js";
-import { DesktopAdapter } from "../../adapters/desktop-adapter.js";
-import { BrowserAdapter } from "../../adapters/browser-adapter.js";
-import { IosAdapter } from "../../adapters/ios-adapter.js";
-import { DesktopClient } from "../../desktop/client.js";
-import type { RawLaunchOptions } from "../../desktop/types.js";
+import type {
+  BrowserAdapterLike,
+  DesktopAdapterLike,
+  DesktopClientLike,
+  RawLaunchOptionsLike,
+} from "../../adapters/contracts.js";
 import type { Platform } from "../../platform-types.js";
-import type { WebViewInspector } from "../../adb/webview.js";
 
 export class DesktopFacade {
   constructor(private readonly adapters: Map<Platform, CorePlatformAdapter>) {}
 
-  private requireDesktop(): DesktopAdapter {
-    const desktop = this.adapters.get("desktop");
-    if (!desktop || !(desktop instanceof DesktopAdapter)) {
-      throw new Error("Desktop adapter is not available in this configuration.");
+  private requireDesktop(): DesktopAdapterLike {
+    const desktop = this.adapters.get("desktop") as DesktopAdapterLike | undefined;
+    if (!desktop || typeof desktop.launch !== "function") {
+      throw new Error(
+        "Desktop is not installed. Run `mcp-devices install desktop`."
+      );
     }
     return desktop;
   }
@@ -34,7 +36,7 @@ export class DesktopFacade {
    * success message previously produced inline in DeviceManager.
    * Caller is responsible for flipping `activeTarget` to "desktop".
    */
-  async launch(options: RawLaunchOptions): Promise<string> {
+  async launch(options: RawLaunchOptionsLike): Promise<string> {
     const desktop = this.requireDesktop();
     await desktop.launch(options);
     if (options.mode === "bundle") {
@@ -54,49 +56,32 @@ export class DesktopFacade {
     await this.requireDesktop().stop();
   }
 
-  getClient(): DesktopClient {
+  getClient(): DesktopClientLike {
     return this.requireDesktop().getClient();
   }
 
   isRunning(): boolean {
-    const adapter = this.adapters.get("desktop");
-    if (!adapter || !(adapter instanceof DesktopAdapter)) return false;
-    return adapter.isRunning();
+    const adapter = this.adapters.get("desktop") as DesktopAdapterLike | undefined;
+    if (!adapter || typeof adapter.isRunning !== "function") return false;
+    return Boolean(adapter.isRunning());
   }
 
   getState(): { status: string } | undefined {
-    const adapter = this.adapters.get("desktop");
-    if (adapter instanceof DesktopAdapter) return adapter.getState();
+    const adapter = this.adapters.get("desktop") as DesktopAdapterLike | undefined;
+    if (adapter && typeof adapter.getState === "function") {
+      return adapter.getState() as { status: string } | undefined;
+    }
     return undefined;
   }
 
-  getBrowser(): BrowserAdapter {
+  getBrowser(): BrowserAdapterLike {
     const adapter = this.adapters.get("browser");
-    if (!adapter || !(adapter instanceof BrowserAdapter)) {
-      throw new Error("Browser adapter is not available in this configuration.");
+    if (!adapter) {
+      throw new Error(
+        "Web is not installed. Run `mcp-devices install web`."
+      );
     }
-    return adapter;
+    return adapter as unknown as BrowserAdapterLike;
   }
 
-  /**
-   * Best-effort cleanup of long-lived resources owned by desktop, ios,
-   * browser adapters + an optional WebViewInspector. Mirrors the legacy
-   * try/catch swallow semantics so a single broken adapter cannot
-   * prevent the others from being torn down.
-   */
-  async cleanup(webViewInspector?: WebViewInspector): Promise<void> {
-    const desktop = this.adapters.get("desktop");
-    if (desktop instanceof DesktopAdapter) {
-      try { await desktop.stop(); } catch {}
-    }
-    const ios = this.adapters.get("ios");
-    if (ios instanceof IosAdapter) {
-      try { ios.getClient().cleanup(); } catch {}
-    }
-    try { webViewInspector?.cleanup(); } catch {}
-    const browser = this.adapters.get("browser");
-    if (browser instanceof BrowserAdapter) {
-      try { await browser.cleanup(); } catch {}
-    }
-  }
 }
